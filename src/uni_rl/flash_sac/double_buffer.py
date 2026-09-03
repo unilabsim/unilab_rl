@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from omegaconf import DictConfig
@@ -41,6 +42,7 @@ def build_flashsac_double_buffer_runner(
     torch_thread_runtime: dict[str, Any] | None = None,
     collector_cpu_ids: list[int] | None = None,
     dp_sync: DpParameterSync | None = None,
+    backend_device_binder: Callable[[str], str | None] | None = None,
 ) -> Any:
     """Build FlashSAC with the bounded-ingress device replay pipeline."""
     device = require_offpolicy_replay_device(device or get_default_device())
@@ -129,4 +131,5 @@ def build_flashsac_double_buffer_runner(
         torch_thread_runtime=torch_thread_runtime,
         collector_cpu_ids=collector_cpu_ids,
         dp_sync=dp_sync,
+        backend_device_binder=backend_device_binder,
     )
