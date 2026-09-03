@@ -7,17 +7,13 @@ from typing import Any, cast
 
 import numpy as np
 import torch
-from unilab.base.final_observation import (
-    resolve_terminal_observation_contract,  # TODO(issue-1479): decouple from unilab
-)
-from unilab.base.observations import split_obs_dict  # TODO(issue-1479): decouple from unilab
-from unilab.base.process_device import (
-    configure_backend_process_device,  # TODO(issue-1479): decouple from unilab
-)
-from unilab.base.registry import ensure_registries  # TODO(issue-1479): decouple from unilab
 
 from uni_rl.common.collector_timing import extract_env_step_breakdown_timing_ms
+from uni_rl.env_contract import EnvFactory
 from uni_rl.offpolicy.thread_budget import apply_torch_thread_runtime
+from uni_rl.utils.device import configure_backend_process_device
+from uni_rl.utils.final_observation import resolve_terminal_observation_contract
+from uni_rl.utils.observations import split_obs_dict
 from uni_rl.utils.seed import apply_training_seed
 
 # Exclusive phases for one collector loop iteration (one vectorized env.step).
@@ -152,7 +148,7 @@ def _wait_for_inference_tick(
 
 def off_policy_collector_fn(
     stop_event,
-    env_name: str,
+    env_factory: EnvFactory,
     num_envs: int,
     replay_buffer,
     inference_slot,
@@ -168,6 +164,7 @@ def off_policy_collector_fn(
     trace_thread_time: bool = False,
     nan_guard_cfg=None,
     torch_thread_runtime=None,
+    backend_device_binder=None,
 ):
     """Entry point for the off-policy collector subprocess.
 
@@ -176,7 +173,7 @@ def off_policy_collector_fn(
     """
     _run_collector(
         stop_event=stop_event,
-        env_name=env_name,
+        env_factory=env_factory,
         num_envs=num_envs,
         replay_buffer=replay_buffer,
         inference_slot=inference_slot,
@@ -192,12 +189,13 @@ def off_policy_collector_fn(
         trace_thread_time=trace_thread_time,
         nan_guard_cfg=nan_guard_cfg,
         torch_thread_runtime=torch_thread_runtime,
+        backend_device_binder=backend_device_binder,
     )
 
 
 def _run_collector(
     stop_event,
-    env_name,
+    env_factory,
     num_envs,
     replay_buffer,
     inference_slot,
@@ -213,12 +211,12 @@ def _run_collector(
     trace_thread_time,
     nan_guard_cfg=None,
     torch_thread_runtime=None,
+    backend_device_binder=None,
 ):
-    from unilab.base import registry  # TODO(issue-1479): decouple from unilab
-
     apply_torch_thread_runtime(torch_thread_runtime, role="collector", torch_module=torch)
-    configured_backend_device = configure_backend_process_device(sim_backend, backend_device)
-    ensure_registries()
+    configured_backend_device = configure_backend_process_device(
+        sim_backend, backend_device, bind_device=backend_device_binder
+    )
     apply_training_seed(seed, torch_runtime=False, cuda=False)
 
     trace_recorder = None
@@ -227,10 +225,9 @@ def _run_collector(
 
         trace_recorder = TraceRecorder("offpolicy_collector")
 
-    # Initialize environment
-    env: Any = registry.make(
-        env_name, num_envs=num_envs, sim_backend=sim_backend, env_cfg_override=env_cfg_override
-    )
+    # Initialize environment through the injected factory (see
+    # ``uni_rl.env_contract``); uni_rl never touches an env registry.
+    env = env_factory(num_envs, env_cfg_override)
     if nan_guard_cfg is not None and nan_guard_cfg.enabled:
         from uni_rl.utils.nan_guard import NanGuard
 

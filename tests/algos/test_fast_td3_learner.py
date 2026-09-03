@@ -205,30 +205,3 @@ class TestFastTD3Learner:
 # ---------------------------------------------------------------------------
 # CLI routing
 # ---------------------------------------------------------------------------
-
-
-class TestTD3CLIRouting:
-    def test_build_route_td3_go2_joystick_flat_motrix(self):
-        from unilab.cli import build_route  # TODO(issue-1479): decouple from unilab
-
-        route = build_route("td3", "go2_joystick_flat", "motrix")
-        assert route.script_name == "train_td3.py"
-        assert route.config_group == "td3"
-        assert route.owner_task == "go2_joystick_flat/motrix.yaml"
-        assert route.generated_overrides == ("task=go2_joystick_flat/motrix",)
-
-    def test_build_route_td3_go1_joystick_flat_motrix(self):
-        from unilab.cli import build_route  # TODO(issue-1479): decouple from unilab
-
-        route = build_route("td3", "go1_joystick_flat", "motrix")
-        assert route.script_name == "train_td3.py"
-        assert route.owner_task == "go1_joystick_flat/motrix.yaml"
-
-    def test_td3_in_offpolicy_algos(self):
-        from unilab.cli import (  # TODO(issue-1479): decouple from unilab
-            OFFPOLICY_ALGOS,
-            SUPPORTED_ALGOS,
-        )
-
-        assert "td3" in SUPPORTED_ALGOS
-        assert "td3" in OFFPOLICY_ALGOS

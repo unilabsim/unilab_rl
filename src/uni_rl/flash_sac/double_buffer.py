@@ -5,14 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from omegaconf import DictConfig
-from unilab.base.config_adapter import create_env  # TODO(issue-1479): decouple from unilab
-from unilab.base.registry import ensure_registries  # TODO(issue-1479): decouple from unilab
 
+from uni_rl.env_contract import EnvFactory
 from uni_rl.flash_sac.learner import FlashSACLearner
 from uni_rl.ipc.replay_pipelines.gpu_resident import require_offpolicy_replay_device
 from uni_rl.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
 from uni_rl.utils.device import get_default_device
 from uni_rl.utils.nan_guard import NanGuardCfg
+from uni_rl.utils.observations import get_obs_dims
 from uni_rl.utils.seed import apply_training_seed
 
 if TYPE_CHECKING:
@@ -33,6 +33,7 @@ def _validate_flashsac_double_buffer_runtime(
 def build_flashsac_double_buffer_runner(
     cfg: DictConfig,
     *,
+    env_factory: EnvFactory,
     env_cfg_override: dict[str, Any] | None,
     replay_prefetch_mode: str,
     device: str | None = None,
@@ -42,19 +43,16 @@ def build_flashsac_double_buffer_runner(
     dp_sync: DpParameterSync | None = None,
 ) -> Any:
     """Build FlashSAC with the bounded-ingress device replay pipeline."""
-    from unilab.base.observations import get_obs_dims  # TODO(issue-1479): decouple from unilab
-
     device = require_offpolicy_replay_device(device or get_default_device())
-    ensure_registries()
     apply_training_seed(cfg.algo.seed, torch_runtime=True, cuda=True)
     _validate_flashsac_double_buffer_runtime(
         cfg,
         replay_prefetch_mode=replay_prefetch_mode,
     )
 
-    env = create_env(cfg, num_envs=1, env_cfg_override=env_cfg_override)
+    env = env_factory(1, env_cfg_override)
     try:
-        obs_dim, critic_obs_dim = get_obs_dims(env.obs_groups_spec)
+        obs_dim, critic_obs_dim = get_obs_dims(dict(env.obs_groups_spec))
         action_shape = env.action_space.shape
         assert action_shape is not None
         action_dim = int(action_shape[0])
@@ -109,6 +107,7 @@ def build_flashsac_double_buffer_runner(
         learner=learner,
         env_name=cfg.training.task_name,
         algo_type="flashsac",
+        env_factory=env_factory,
         num_envs=cfg.algo.num_envs,
         replay_buffer_n=cfg.algo.replay_buffer_n,
         batch_size=cfg.algo.batch_size,

@@ -20,9 +20,11 @@ from rsl_rl.utils import resolve_callable
 from uni_rl.appo.learner import APPOLearner
 from uni_rl.appo.staging import RolloutStagingPool
 from uni_rl.appo.worker import appo_collector_fn
+from uni_rl.env_contract import EnvFactory
 from uni_rl.ipc import AsyncRunner, RolloutRingBuffer, SharedWeightSync
 from uni_rl.logging import OffPolicyLogger
 from uni_rl.utils.nan_guard import NanGuardCfg
+from uni_rl.utils.observations import get_critic_base_dim, get_obs_dims
 from uni_rl.utils.seed import apply_training_seed, derive_worker_seed
 
 
@@ -52,6 +54,7 @@ class APPORunner(AsyncRunner):
         env_name: str,
         env_cfg_overrides: dict,
         rl_cfg: dict,
+        env_factory: EnvFactory,
         device: str | None = None,
         collector_device: str | None = None,
         sim_backend: str = "mujoco",
@@ -78,6 +81,7 @@ class APPORunner(AsyncRunner):
         self.seed = seed
         self.resume_path = resume_path
         self.nan_guard_cfg = nan_guard_cfg
+        self.env_factory = env_factory
         if self.staging_pool_size < 1:
             raise ValueError("APPO staging pool size must be >= 1")
 
@@ -113,26 +117,12 @@ class APPORunner(AsyncRunner):
                 critic_group["policy"] = self.critic_input_dim
 
     def _detect_dims(self):
-        """Create a tiny env to read obs/action dims, then close it."""
-        from unilab.base import registry  # TODO(issue-1479): decouple from unilab
-        from unilab.base.observations import (  # TODO(issue-1479): decouple from unilab
-            get_critic_base_dim,
-            get_obs_dims,
-        )
-        from unilab.base.registry import ensure_registries  # TODO(issue-1479): decouple from unilab
-
-        ensure_registries()
-
+        """Create a tiny probe env via the injected factory, read dims, close it."""
         apply_training_seed(self.seed, torch_runtime=True, cuda=True)
-        env = registry.make(
-            self.env_name,
-            num_envs=1,
-            sim_backend=self.sim_backend,
-            env_cfg_override=self.env_cfg_overrides if self.env_cfg_overrides else None,
-        )
-        obs_dim, critic_dim = get_obs_dims(env.obs_groups_spec)
+        env = self.env_factory(1, self.env_cfg_overrides if self.env_cfg_overrides else None)
+        obs_dim, critic_dim = get_obs_dims(dict(env.obs_groups_spec))
         self.critic_dim = critic_dim
-        self.critic_input_dim = get_critic_base_dim(env.obs_groups_spec)
+        self.critic_input_dim = get_critic_base_dim(dict(env.obs_groups_spec))
         assert env.action_space.shape is not None
         action_dim = env.action_space.shape[0]
         env.close()
@@ -267,7 +257,7 @@ class APPORunner(AsyncRunner):
 
         # Start collector
         collector_kwargs = {
-            "env_name": self.env_name,
+            "env_factory": self.env_factory,
             "rl_cfg": self.rl_cfg,
             "num_envs": self.num_envs,
             "steps_per_env": self.steps_per_env,
@@ -285,7 +275,6 @@ class APPORunner(AsyncRunner):
             "critic_weight_param_shapes": critic_weight_param_shapes,
             "metrics_queue": metrics_queue,
             "collector_device": self.collector_device,
-            "sim_backend": self.sim_backend,
             "env_cfg_override": self.env_cfg_overrides if self.env_cfg_overrides else None,
             "seed": derive_worker_seed(self.seed, worker_index=0),
             "nan_guard_cfg": self.nan_guard_cfg,

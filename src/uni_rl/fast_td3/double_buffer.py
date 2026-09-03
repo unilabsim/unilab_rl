@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from omegaconf import DictConfig
 
 from uni_rl.common.device import get_env_dims
+from uni_rl.env_contract import EnvFactory
 from uni_rl.fast_td3.learner import FastTD3Learner
 from uni_rl.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
 from uni_rl.utils.nan_guard import NanGuardCfg
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 def build_td3_double_buffer_runner(
     cfg: DictConfig,
     *,
+    env_factory: EnvFactory,
     env_cfg_override: dict[str, Any] | None,
     replay_prefetch_mode: str,
     device: str,
@@ -28,8 +30,7 @@ def build_td3_double_buffer_runner(
 ) -> Any:
     """Build TD3 from its Hydra owner config without interpreting it in the entrypoint."""
     obs_dim, action_dim, critic_obs_dim = get_env_dims(
-        cfg.training.task_name,
-        cfg.training.sim_backend,
+        env_factory,
         env_cfg_override=env_cfg_override,
     )
     learner = FastTD3Learner(
@@ -62,6 +63,7 @@ def build_td3_double_buffer_runner(
         learner=learner,
         env_name=cfg.training.task_name,
         algo_type="td3",
+        env_factory=env_factory,
         env_cfg_override=env_cfg_override,
         device=device,
         num_envs=cfg.algo.num_envs,

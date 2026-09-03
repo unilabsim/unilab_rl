@@ -11,16 +11,13 @@ from typing import Any, Dict
 import numpy as np
 import torch
 from rsl_rl.utils import resolve_callable
-from unilab.base.final_observation import (
-    resolve_terminal_observation_contract,  # TODO(issue-1479): decouple from unilab
-)
-from unilab.base.registry import ensure_registries  # TODO(issue-1479): decouple from unilab
 
 from uni_rl.appo.worker import (
     compute_rollout_active_steps_per_sec,
     put_latest_metrics,
 )
 from uni_rl.common.collector_timing import extract_env_step_breakdown_timing_ms
+from uni_rl.utils.final_observation import resolve_terminal_observation_contract
 from uni_rl.utils.seed import apply_training_seed
 
 from .observations import split_hora_obs_with_priv_info
@@ -66,7 +63,7 @@ def compute_hora_timeout_bootstrap_correction(
 
 def hora_appo_collector_fn(
     stop_event: Any,
-    env_name: str,
+    env_factory: Any,
     rl_cfg: dict,
     num_envs: int,
     steps_per_env: int,
@@ -81,7 +78,6 @@ def hora_appo_collector_fn(
     critic_weight_param_shapes: dict,
     metrics_queue: Any,
     collector_device: str = "cpu",
-    sim_backend: str = "mujoco",
     env_cfg_override: dict | None = None,
     priv_info_dim: int = 0,
     seed: int | None = None,
@@ -90,7 +86,6 @@ def hora_appo_collector_fn(
     from copy import deepcopy
 
     from tensordict import TensorDict
-    from unilab.base import registry  # TODO(issue-1479): decouple from unilab
 
     from uni_rl.hora.models import build_hora_shared_actor_critic
     from uni_rl.hora.rsl_rl_compat import (
@@ -100,7 +95,6 @@ def hora_appo_collector_fn(
     )
     from uni_rl.ipc import RolloutRingBuffer, SharedWeightSync
 
-    ensure_registries()
     apply_training_seed(seed, torch_runtime=True, cuda=True)
 
     ring_buffer = RolloutRingBuffer(
@@ -124,12 +118,7 @@ def hora_appo_collector_fn(
         shm_name=critic_weight_sync_name,
     )
 
-    env: Any = registry.make(
-        env_name,
-        num_envs=num_envs,
-        sim_backend=sim_backend,
-        env_cfg_override=env_cfg_override,
-    )
+    env = env_factory(num_envs, env_cfg_override)
 
     cfg = dict(rl_cfg)
     if is_rsl_rl_v5():

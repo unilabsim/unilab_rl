@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
+from uni_rl.env_contract import EnvFactory
 from uni_rl.flash_sac.learner import FlashSACLearner
 from uni_rl.ipc.replay_pipelines.gpu_resident import require_offpolicy_replay_device
 from uni_rl.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
 from uni_rl.utils.device import get_default_device
+from uni_rl.utils.observations import get_obs_dims
 
 
 class FlashSACRunner(DoubleBufferOffPolicyRunner):
     def __init__(
         self,
         env_name: str,
+        env_factory: EnvFactory,
         env_cfg_override: dict[str, Any] | None = None,
         device: str | None = None,
         num_envs: int = 2048,
@@ -63,19 +66,12 @@ class FlashSACRunner(DoubleBufferOffPolicyRunner):
         trace_thread_time: bool = False,
         trace_cuda_events: bool = True,
     ):
-        from unilab.base import registry  # TODO(issue-1479): decouple from unilab
-        from unilab.base.observations import get_obs_dims  # TODO(issue-1479): decouple from unilab
-        from unilab.base.registry import ensure_registries  # TODO(issue-1479): decouple from unilab
-
         from uni_rl.utils.seed import apply_training_seed
 
         runtime_device = require_offpolicy_replay_device(device or get_default_device())
-        ensure_registries()
         apply_training_seed(seed, torch_runtime=True, cuda=True)
-        env: Any = registry.make(
-            env_name, num_envs=1, sim_backend=sim_backend, env_cfg_override=env_cfg_override
-        )
-        obs_dim, critic_obs_dim = get_obs_dims(env.obs_groups_spec)
+        env = env_factory(1, env_cfg_override)
+        obs_dim, critic_obs_dim = get_obs_dims(dict(env.obs_groups_spec))
         action_shape = env.action_space.shape
         assert action_shape is not None
         action_dim = int(action_shape[0])
@@ -125,6 +121,7 @@ class FlashSACRunner(DoubleBufferOffPolicyRunner):
             learner=learner,
             env_name=env_name,
             algo_type="flashsac",
+            env_factory=env_factory,
             num_envs=num_envs,
             replay_buffer_n=replay_buffer_n,
             batch_size=batch_size,

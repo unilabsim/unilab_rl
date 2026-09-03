@@ -12,11 +12,9 @@ import numpy as np
 import torch
 from omegaconf import open_dict
 from tensordict import TensorDict
-from unilab.base.final_observation import (
-    resolve_terminal_observation_contract,  # TODO(issue-1479): decouple from unilab
-)
-from unilab.base.np_env import NpEnvState  # TODO(issue-1479): decouple from unilab
 
+from uni_rl.env_contract import EnvStateProtocol
+from uni_rl.utils.final_observation import resolve_terminal_observation_contract
 from uni_rl.utils.tensor import to_numpy, to_torch
 
 
@@ -179,7 +177,7 @@ def normalize_ppo_train_cfg(train_cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 class RslRlVecEnvWrapper:
-    """Adapter from UniLab's env contract to the RSL-RL VecEnv contract."""
+    """Adapter from the uni_rl env contract (uni_rl.env_contract) to RSL-RL VecEnv."""
 
     def __init__(
         self,
@@ -264,7 +262,7 @@ class RslRlVecEnvWrapper:
             td_dict["critic"] = to_torch(obs["critic"], self.device)
         return TensorDict(td_dict, batch_size=self.num_envs, device=self.device)
 
-    def _resolve_final_observation(self, state: NpEnvState) -> dict[str, Any] | None:
+    def _resolve_final_observation(self, state: EnvStateProtocol) -> dict[str, Any] | None:
         if isinstance(state.final_observation, dict):
             return state.final_observation
         if isinstance(state.info, dict):
@@ -273,7 +271,7 @@ class RslRlVecEnvWrapper:
                 return final_observation
         return None
 
-    def _resolve_done(self, state: NpEnvState) -> torch.Tensor:
+    def _resolve_done(self, state: EnvStateProtocol) -> torch.Tensor:
         return to_torch(state.terminated | state.truncated, self.device).bool()
 
     def step(

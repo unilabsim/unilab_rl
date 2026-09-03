@@ -7,6 +7,7 @@ from collections import deque
 from typing import Any
 
 from uni_rl.common.device import get_env_dims
+from uni_rl.env_contract import EnvFactory
 from uni_rl.ipc.async_runner import AsyncRunner
 from uni_rl.logging import OffPolicyLogger
 from uni_rl.utils.device import get_default_device
@@ -112,6 +113,7 @@ class OffPolicyRunner(AsyncRunner):
         learner,
         env_name: str,
         algo_type: str,
+        env_factory: EnvFactory,
         num_envs: int = 4096,
         replay_buffer_n: int = 1024,
         batch_size: int = 8192,
@@ -144,6 +146,7 @@ class OffPolicyRunner(AsyncRunner):
         )
 
         self.learner = learner
+        self.env_factory = env_factory
         self.env_cfg_override = env_cfg_override
         self.algo_type = algo_type
         self.replay_buffer_n = replay_buffer_n
@@ -169,9 +172,8 @@ class OffPolicyRunner(AsyncRunner):
 
         apply_training_seed(self.seed, torch_runtime=True, cuda=True)
         self.obs_dim, self.action_dim, self.critic_obs_dim = get_env_dims(
-            self.env_name,
-            sim_backend,
-            env_cfg_override,
+            self.env_factory,
+            self.env_cfg_override,
         )
 
     def _get_default_device(self) -> str:
