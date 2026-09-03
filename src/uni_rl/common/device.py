@@ -1,22 +1,32 @@
-from unilab.base import registry  # TODO(issue-1479): decouple from unilab
+"""Probe env dims through an injected env factory (issue #1479)."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+from uni_rl.env_contract import EnvFactory
+from uni_rl.utils.observations import get_obs_dims as _get_obs_dims
 
 
 def get_env_dims(
-    env_name: str, sim_backend: str = "mujoco", env_cfg_override: dict | None = None
+    env_factory: EnvFactory,
+    env_cfg_override: Mapping[str, Any] | None = None,
 ) -> tuple[int, int, int]:
-    """Get (actor_obs_dim, action_dim, critic_obs_dim) from environment."""
-    from unilab.base.observations import (
-        get_obs_dims as get_obs_dims_from_spec,  # TODO(issue-1479): decouple from unilab
-    )
+    """Get (actor_obs_dim, action_dim, critic_obs_dim) from a probe env.
 
-    env = registry.make(
-        env_name, num_envs=1, sim_backend=sim_backend, env_cfg_override=env_cfg_override
-    )
-    obs_dim, critic_dim = get_obs_dims_from_spec(env.obs_groups_spec)
-    action_shape = env.action_space.shape
-    assert action_shape is not None
-    action_dim = action_shape[0]
-    env.close()  # type: ignore[attr-defined]
+    Builds a one-env probe through the injected factory, reads the dims from
+    the env contract, and closes the probe again. ``env_cfg_override`` is an
+    opaque mapping forwarded to the factory.
+    """
+    env = env_factory(1, env_cfg_override)
+    try:
+        obs_dim, critic_dim = _get_obs_dims(dict(env.obs_groups_spec))
+        action_shape = env.action_space.shape
+        assert action_shape is not None
+        action_dim = action_shape[0]
+    finally:
+        env.close()
     return obs_dim, action_dim, critic_dim
 
 

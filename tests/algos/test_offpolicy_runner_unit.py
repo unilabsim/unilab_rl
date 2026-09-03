@@ -305,6 +305,10 @@ class _FakeLogger:
         return 0.0
 
 
+def _unused_env_factory(num_envs, env_cfg_override=None):
+    raise AssertionError("probe env must not be constructed when get_env_dims is patched")
+
+
 def _make_device_runner(
     monkeypatch: pytest.MonkeyPatch,
     learner=None,
@@ -320,6 +324,7 @@ def _make_device_runner(
         learner=learner or _Learner(),
         env_name="DummyEnv",
         algo_type="sac",
+        env_factory=_unused_env_factory,
         num_envs=2,
         replay_buffer_n=8,
         batch_size=4,

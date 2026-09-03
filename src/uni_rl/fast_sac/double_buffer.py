@@ -5,14 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from omegaconf import DictConfig, OmegaConf
-from unilab.base.config_adapter import create_env  # TODO(issue-1479): decouple from unilab
-from unilab.base.np_env import NpEnv  # TODO(issue-1479): decouple from unilab
-from unilab.base.registry import ensure_registries  # TODO(issue-1479): decouple from unilab
 
+from uni_rl.env_contract import EnvFactory
 from uni_rl.fast_sac.learner import FastSACLearner
 from uni_rl.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
 from uni_rl.offpolicy.runtime import resolve_custom_offpolicy_runtime
 from uni_rl.utils.nan_guard import NanGuardCfg
+from uni_rl.utils.observations import get_obs_dims
 
 if TYPE_CHECKING:
     from uni_rl.ipc.dp_sync import DpParameterSync
@@ -21,6 +20,7 @@ if TYPE_CHECKING:
 def build_sac_double_buffer_runner(
     cfg: DictConfig,
     *,
+    env_factory: EnvFactory,
     env_cfg_override: dict[str, Any] | None,
     replay_prefetch_mode: str,
     device: str,
@@ -30,17 +30,14 @@ def build_sac_double_buffer_runner(
     dp_sync: DpParameterSync | None = None,
 ) -> Any:
     """Build SAC from its Hydra owner config without interpreting it in the entrypoint."""
-    from unilab.base.observations import get_obs_dims  # TODO(issue-1479): decouple from unilab
-
-    ensure_registries()
     rl_cfg = cast(dict[str, Any], OmegaConf.to_container(cfg.algo, resolve=True))
     custom_runtime = resolve_custom_offpolicy_runtime(rl_cfg)
 
-    env = cast(NpEnv, create_env(cfg, num_envs=1, env_cfg_override=env_cfg_override))
+    env = env_factory(1, env_cfg_override)
     try:
         action_shape = env.action_space.shape
         assert action_shape
-        obs_dim, critic_obs_dim = get_obs_dims(env.obs_groups_spec)
+        obs_dim, critic_obs_dim = get_obs_dims(dict(env.obs_groups_spec))
         action_dim = int(action_shape[0])
     finally:
         env.close()
@@ -102,6 +99,7 @@ def build_sac_double_buffer_runner(
         learner=learner,
         env_name=cfg.training.task_name,
         algo_type=algo_type,
+        env_factory=env_factory,
         num_envs=cfg.algo.num_envs,
         replay_buffer_n=cfg.algo.replay_buffer_n,
         batch_size=batch_size,

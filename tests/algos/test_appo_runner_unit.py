@@ -217,7 +217,7 @@ class _FakeClock:
 
 
 def test_appo_runner_uses_explicit_runtime_context(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path, fake_env_factory
 ) -> None:
     captured_detect: dict[str, object] = {}
     captured_collector: dict[str, object] = {}
@@ -241,6 +241,7 @@ def test_appo_runner_uses_explicit_runtime_context(
 
     runner = APPORunner(
         env_name="DummyEnv",
+        env_factory=fake_env_factory,
         env_cfg_overrides={"reward_config": {"scales": {"alive": 1.0}}},
         rl_cfg={"actor": {}, "critic": {}, "algorithm": {}},
         device="cpu",
@@ -254,11 +255,14 @@ def test_appo_runner_uses_explicit_runtime_context(
     runner.learn(max_iterations=0, save_interval=0, log_dir=str(tmp_path))
 
     assert captured_detect["sim_backend"] == "motrix"
-    assert captured_collector["sim_backend"] == "motrix"
+    assert "sim_backend" not in captured_collector
+    assert captured_collector["env_factory"] is fake_env_factory
     assert captured_collector["env_cfg_override"] == {"reward_config": {"scales": {"alive": 1.0}}}
 
 
-def test_appo_runner_restores_resume_checkpoint(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_appo_runner_restores_resume_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, fake_env_factory
+) -> None:
     def fake_detect_dims(self: APPORunner) -> tuple[int, int]:
         self.critic_dim = 7
         self.critic_input_dim = 5
@@ -280,6 +284,7 @@ def test_appo_runner_restores_resume_checkpoint(monkeypatch: pytest.MonkeyPatch,
 
     runner = APPORunner(
         env_name="DummyEnv",
+        env_factory=fake_env_factory,
         env_cfg_overrides={},
         rl_cfg={"actor": {}, "critic": {}, "algorithm": {}},
         device="cpu",
@@ -303,7 +308,7 @@ def test_appo_runner_restores_resume_checkpoint(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_appo_runner_logs_learner_timing_for_fps_inputs(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path, fake_env_factory
 ) -> None:
     def fake_detect_dims(self: APPORunner) -> tuple[int, int]:
         self.critic_dim = 7
@@ -341,6 +346,7 @@ def test_appo_runner_logs_learner_timing_for_fps_inputs(
 
     runner = APPORunner(
         env_name="DummyEnv",
+        env_factory=fake_env_factory,
         env_cfg_overrides={},
         rl_cfg={"actor": {}, "critic": {}, "algorithm": {}},
         device="cpu",
@@ -376,7 +382,7 @@ def test_appo_runner_logs_learner_timing_for_fps_inputs(
 
 
 def test_appo_runner_stages_multiple_rollouts_without_runner_cat(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path, fake_env_factory
 ) -> None:
     def fake_detect_dims(self: APPORunner) -> tuple[int, int]:
         self.critic_dim = 7
@@ -403,6 +409,7 @@ def test_appo_runner_stages_multiple_rollouts_without_runner_cat(
 
     runner = APPORunner(
         env_name="DummyEnv",
+        env_factory=fake_env_factory,
         env_cfg_overrides={},
         rl_cfg={"actor": {}, "critic": {}, "algorithm": {}},
         device="cpu",
@@ -435,7 +442,7 @@ def test_appo_runner_stages_multiple_rollouts_without_runner_cat(
 
 
 def test_appo_runner_fails_fast_when_collector_dies_during_wait(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path, fake_env_factory
 ) -> None:
     """Issue #594 B-2: collector dying mid-wait should raise within seconds, not 60s."""
     import time as _time
@@ -472,6 +479,7 @@ def test_appo_runner_fails_fast_when_collector_dies_during_wait(
 
     runner = APPORunner(
         env_name="DummyEnv",
+        env_factory=fake_env_factory,
         env_cfg_overrides={},
         rl_cfg={"actor": {}, "critic": {}, "algorithm": {}},
         device="cpu",

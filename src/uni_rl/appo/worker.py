@@ -15,13 +15,10 @@ from typing import Any, Dict
 import numpy as np
 import torch
 from rsl_rl.utils import resolve_callable
-from unilab.base.final_observation import (
-    resolve_terminal_observation_contract,  # TODO(issue-1479): decouple from unilab
-)
-from unilab.base.observations import split_obs_dict  # TODO(issue-1479): decouple from unilab
-from unilab.base.registry import ensure_registries  # TODO(issue-1479): decouple from unilab
 
 from uni_rl.common.collector_timing import extract_env_step_breakdown_timing_ms
+from uni_rl.utils.final_observation import resolve_terminal_observation_contract
+from uni_rl.utils.observations import split_obs_dict
 from uni_rl.utils.seed import apply_training_seed
 
 
@@ -97,7 +94,7 @@ def compute_timeout_bootstrap_correction(
 
 def appo_collector_fn(
     stop_event: Any,
-    env_name: str,
+    env_factory: Any,
     rl_cfg: dict,
     num_envs: int,
     steps_per_env: int,
@@ -112,7 +109,6 @@ def appo_collector_fn(
     critic_weight_param_shapes: dict,
     metrics_queue: Any,
     collector_device: str = "cpu",
-    sim_backend: str = "mujoco",
     env_cfg_override: dict | None = None,
     seed: int | None = None,
     nan_guard_cfg=None,
@@ -126,11 +122,9 @@ def appo_collector_fn(
     from copy import deepcopy
 
     from tensordict import TensorDict
-    from unilab.base import registry  # TODO(issue-1479): decouple from unilab
 
     from uni_rl.ipc import RolloutRingBuffer, SharedWeightSync
 
-    ensure_registries()
     apply_training_seed(seed, torch_runtime=True, cuda=True)
 
     # Connect to shared memory
@@ -151,10 +145,8 @@ def appo_collector_fn(
         critic_weight_param_shapes, create=False, shm_name=critic_weight_sync_name
     )
 
-    # Create environment
-    env: Any = registry.make(
-        env_name, num_envs=num_envs, sim_backend=sim_backend, env_cfg_override=env_cfg_override
-    )
+    # Create environment through the injected factory (see uni_rl.env_contract)
+    env = env_factory(num_envs, env_cfg_override)
 
     if nan_guard_cfg is not None and nan_guard_cfg.enabled:
         from uni_rl.utils.nan_guard import NanGuard

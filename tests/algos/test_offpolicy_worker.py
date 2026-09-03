@@ -25,26 +25,22 @@ def test_collector_binds_backend_device_before_env_materialization(
     class _EnvMaterializedError(RuntimeError):
         pass
 
-    def configure(backend_type: str, device: str | None) -> str:
-        events.append(("bind", backend_type, str(device)))
-        return str(device)
+    def bind_device(device: str) -> str:
+        events.append(("bind", device))
+        return device
 
-    def make_env(name: str, **kwargs):
-        events.append(("make", name, str(kwargs["sim_backend"])))
+    def env_factory(num_envs, env_cfg_override=None):
+        del env_cfg_override
+        events.append(("make", str(num_envs)))
         raise _EnvMaterializedError
 
-    from unilab.base import registry  # TODO(issue-1479): decouple from unilab
-
-    monkeypatch.setattr(worker_module, "configure_backend_process_device", configure)
     monkeypatch.setattr(worker_module, "apply_torch_thread_runtime", lambda *args, **kwargs: None)
-    monkeypatch.setattr(worker_module, "ensure_registries", lambda: None)
     monkeypatch.setattr(worker_module, "apply_training_seed", lambda *args, **kwargs: None)
-    monkeypatch.setattr(registry, "make", make_env)
 
     with pytest.raises(_EnvMaterializedError):
         worker_module._run_collector(
             stop_event=None,
-            env_name="DummyEnv",
+            env_factory=env_factory,
             num_envs=2,
             replay_buffer=None,
             inference_slot=None,
@@ -58,11 +54,14 @@ def test_collector_binds_backend_device_before_env_materialization(
             seed=None,
             trace_enabled=False,
             trace_thread_time=False,
+            backend_device_binder=bind_device,
         )
 
+    # The real configure_backend_process_device resolves mjwarp -> cuda:3 and
+    # must bind it before the env factory runs.
     assert events == [
-        ("bind", "mjwarp", "cuda:3"),
-        ("make", "DummyEnv", "mjwarp"),
+        ("bind", "cuda:3"),
+        ("make", "2"),
     ]
 
 

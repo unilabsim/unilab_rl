@@ -1,5 +1,3 @@
-from unilab.base.registry import ensure_registries  # TODO(issue-1479): decouple from unilab
-
 from uni_rl.common.actor_factory import build_actor
 from uni_rl.common.device import get_env_dims
 from uni_rl.common.networks import Critic, DistributionalQNetwork
@@ -14,6 +12,5 @@ __all__ = [
     "check_nan_loss",
     "clip_gradients",
     "safe_tensor",
-    "ensure_registries",
     "build_actor",
 ]

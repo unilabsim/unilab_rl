@@ -8,11 +8,9 @@ from typing import Any
 import numpy as np
 import torch
 from tensordict import TensorDict
-from unilab.base.final_observation import (
-    resolve_terminal_observation_contract,  # TODO(issue-1479): decouple from unilab
-)
 
 from uni_rl.rsl_rl import RslRlVecEnvWrapper
+from uni_rl.utils.final_observation import resolve_terminal_observation_contract
 from uni_rl.utils.tensor import to_numpy, to_torch
 
 from .observations import build_hora_obs_tensordict

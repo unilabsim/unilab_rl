@@ -299,17 +299,16 @@ def cfg_with_checkpoint_runtime(cfg: DictConfig, checkpoint: dict[str, Any]) -> 
     """Merge model-side runtime config stored in a stage-2 checkpoint.
 
     Args:
-        cfg: Hydra-composed distillation config supplied to play mode.
+        cfg: Hydra-composed distillation config supplied to play mode. The
+            caller owns applying any teacher-owner defaults beforehand (that
+            composition is UniLab-side business; see issue #1480).
         checkpoint: Loaded stage-2 checkpoint dictionary.
 
     Returns:
         Config using the current owner env/reward settings and checkpoint model
         construction fields.
     """
-    from uni_rl.hora.distill_config import apply_teacher_defaults
-
-    cfg_with_owner_defaults = apply_teacher_defaults(cfg)
-    cfg_clone = OmegaConf.create(OmegaConf.to_container(cfg_with_owner_defaults, resolve=False))
+    cfg_clone = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
     runtime_cfg = checkpoint.get("distill_runtime_cfg")
     if runtime_cfg is None:
         return cast(DictConfig, cfg_clone)

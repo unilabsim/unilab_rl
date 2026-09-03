@@ -60,10 +60,12 @@ def resolve_appo_runtime(
         )
 
     runner_cls = getattr(runtime, "runner_cls", None)
-    play_fn = getattr(runtime, "play_fn", None)
-    if runner_cls is None or play_fn is None:
+    if runner_cls is None:
         raise TypeError(
             f"APPO runtime resolver {runtime_resolver!r} must return an object with "
-            "'runner_cls' and 'play_fn' attributes."
+            "a 'runner_cls' attribute."
         )
+    # Custom runtimes may be train-only (play orchestration lives with the
+    # config/script owner); fall back to the generic play entrypoint then.
+    play_fn = getattr(runtime, "play_fn", None) or default_play_fn
     return APPORuntime(runner_cls=runner_cls, play_fn=play_fn)

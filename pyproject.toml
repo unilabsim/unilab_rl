@@ -47,35 +47,7 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy",
-    # TEMPORARY (issue #1479): editable path dependency on UniLab so migrated
-    # modules can keep importing unilab.base.* / unilab.utils.{sim2sim,checkpoint}
-    # until the decoupling lands. Remove together with every
-    # TODO(issue-1479) import marker.
-    "unilab",
 ]
-
-[tool.uv.sources]
-# TEMPORARY (issue #1479): local UniLab checkout for the dev dependency above.
-unilab = { path = "../UniLab", editable = true }
-# TEMPORARY (issue #1479): unilab pins torch==2.8.0 from these indexes.
-torch = [
-    { index = "r2-cu130", marker = "sys_platform=='linux' and platform_machine=='aarch64'" },
-    { index = "pytorch-cu128", marker = "sys_platform=='linux' and platform_machine=='x86_64'" },
-    { index = "pytorch-cu128", marker = "sys_platform=='win32'" },
-]
-
-# TEMPORARY (issue #1479): the unilab dev dependency pins torch==2.8.0 via
-# these indexes; mirroring them here keeps resolution consistent and reuses
-# the shared uv cache. Drop together with the unilab dev dependency.
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[[tool.uv.index]]
-name = "r2-cu130"
-url = "https://download-r2.pytorch.org/whl/cu130"
-explicit = true
 
 [tool.ruff]
 line-length = 100

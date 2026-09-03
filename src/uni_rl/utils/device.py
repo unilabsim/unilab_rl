@@ -9,6 +9,50 @@ from typing import Callable, cast
 import torch
 
 
+def resolve_backend_process_device(backend_type: str, learner_device: str | None) -> str | None:
+    """Resolve the device a backend-bound worker process must occupy.
+
+    Ported from UniLab's ``unilab.base.process_device`` (issue #1479) with
+    identical semantics: only ``mjwarp`` requires an explicit CUDA process
+    device shared with its learner; every other backend returns ``None``.
+    """
+    if backend_type != "mjwarp":
+        return None
+    if learner_device is None:
+        raise ValueError("mjwarp requires an explicit CUDA process device")
+    resolved = str(learner_device).strip()
+    if resolved.split(":", 1)[0].lower() != "cuda":
+        raise ValueError(
+            f"mjwarp requires a CUDA process device shared with its learner; got {resolved!r}"
+        )
+    return resolved
+
+
+def configure_backend_process_device(
+    backend_type: str,
+    learner_device: str | None,
+    *,
+    bind_device: Callable[[str], str | None] | None = None,
+) -> str | None:
+    """Resolve and bind the backend process device for a worker process.
+
+    The actual binding is backend business and stays with the backend owner:
+    callers inject ``bind_device`` (e.g. UniLab passes
+    ``unisim.backend.mjwarp.runtime.bind_mjwarp_process_device``). When a
+    backend requires a process device but no ``bind_device`` is injected, this
+    fails closed with a ``ValueError``.
+    """
+    resolved = resolve_backend_process_device(backend_type, learner_device)
+    if resolved is None:
+        return None
+    if bind_device is None:
+        raise ValueError(
+            f"Backend {backend_type!r} requires binding process device {resolved!r}, "
+            "but no bind_device callable was injected"
+        )
+    return bind_device(resolved)
+
+
 def _xpu_available() -> bool:
     xpu = getattr(torch, "xpu", None)
     is_available = getattr(xpu, "is_available", None)

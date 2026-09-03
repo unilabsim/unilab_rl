@@ -12,11 +12,6 @@ from typing import Any
 import numpy as np
 import torch
 from rsl_rl.utils import resolve_callable
-from unilab.base.observations import (  # TODO(issue-1479): decouple from unilab
-    get_critic_base_dim,
-    get_obs_dims,
-)
-from unilab.base.registry import ensure_registries  # TODO(issue-1479): decouple from unilab
 
 from uni_rl.appo.runner import (
     APPORunner,
@@ -34,6 +29,7 @@ from uni_rl.hora.rsl_rl_compat import (
 )
 from uni_rl.ipc import RolloutRingBuffer, SharedWeightSync
 from uni_rl.logging import OffPolicyLogger
+from uni_rl.utils.observations import get_critic_base_dim, get_obs_dims
 from uni_rl.utils.seed import apply_training_seed, derive_worker_seed
 
 
@@ -85,20 +81,14 @@ class HoraAPPORunner(APPORunner):
             critic_group["priv_info"] = self.priv_info_dim
 
     def _detect_dims(self):
-        from unilab.base import registry  # TODO(issue-1479): decouple from unilab
-
-        ensure_registries()
-
         apply_training_seed(self.seed, torch_runtime=True, cuda=True)
-        env = registry.make(
-            self.env_name,
-            num_envs=self._detect_dim_probe_num_envs(),
-            sim_backend=self.sim_backend,
-            env_cfg_override=self.env_cfg_overrides if self.env_cfg_overrides else None,
+        env = self.env_factory(
+            self._detect_dim_probe_num_envs(),
+            self.env_cfg_overrides if self.env_cfg_overrides else None,
         )
-        obs_dim, critic_dim = get_obs_dims(env.obs_groups_spec)
+        obs_dim, critic_dim = get_obs_dims(dict(env.obs_groups_spec))
         self.critic_dim = critic_dim
-        self.critic_input_dim = get_critic_base_dim(env.obs_groups_spec)
+        self.critic_input_dim = get_critic_base_dim(dict(env.obs_groups_spec))
         if env.state is None:
             env.init_state()
         info = env.state.info if env.state is not None else {}
@@ -259,7 +249,7 @@ class HoraAPPORunner(APPORunner):
 
         metrics_queue: mp.Queue = mp.get_context("spawn").Queue(maxsize=100)
         collector_kwargs = {
-            "env_name": self.env_name,
+            "env_factory": self.env_factory,
             "rl_cfg": self.rl_cfg,
             "num_envs": self.num_envs,
             "steps_per_env": self.steps_per_env,
@@ -278,7 +268,6 @@ class HoraAPPORunner(APPORunner):
             "critic_weight_param_shapes": critic_weight_param_shapes,
             "metrics_queue": metrics_queue,
             "collector_device": self.collector_device,
-            "sim_backend": self.sim_backend,
             "env_cfg_override": self.env_cfg_overrides if self.env_cfg_overrides else None,
             "seed": derive_worker_seed(self.seed, worker_index=0),
         }

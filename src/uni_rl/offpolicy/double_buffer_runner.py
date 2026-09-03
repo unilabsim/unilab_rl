@@ -7,6 +7,7 @@ import queue as queue_module
 import statistics
 import time
 from collections import defaultdict, deque
+from collections.abc import Callable
 from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
@@ -15,10 +16,6 @@ import torch
 
 if TYPE_CHECKING:
     from uni_rl.ipc.dp_sync import DpParameterSync
-
-from unilab.base.process_device import (
-    resolve_backend_process_device,  # TODO(issue-1479): decouple from unilab
-)
 
 from uni_rl.ipc.async_runner import _SPAWN_CTX
 from uni_rl.ipc.inference_slot import SharedInferenceSlot
@@ -39,6 +36,7 @@ from uni_rl.offpolicy.thread_budget import (
     torch_thread_env,
 )
 from uni_rl.offpolicy.worker import off_policy_collector_fn, sample_offpolicy_actions
+from uni_rl.utils.device import resolve_backend_process_device
 from uni_rl.utils.seed import derive_worker_seed
 
 # Terminal/W&B display names for the off-policy algo types. Keep these
@@ -161,6 +159,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         collector_cpu_ids: list[int] | None = None,
         dp_sync: DpParameterSync | None = None,
         inference_request_timeout_sec: float | None = None,
+        backend_device_binder: Callable[[str], str | None] | None = None,
         **kwargs,
     ):
         kwargs["device"] = require_offpolicy_replay_device(kwargs.get("device"))
@@ -195,6 +194,9 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         # merged into the collector-only env override at collector startup.
         self.collector_cpu_ids = list(collector_cpu_ids) if collector_cpu_ids is not None else None
         self.collector_backend_device = collector_backend_device
+        # Backend-owned process-device binder forwarded to the collector
+        # subprocess (e.g. mjwarp); None for backends that need no binding.
+        self.backend_device_binder = backend_device_binder
         # Multi-GPU synchronous data parallelism (None = the bit-identical
         # single-rank path): startup model broadcast, then gradient averaging
         # before every actor/critic/temperature optimizer step.
@@ -966,7 +968,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
 
             # --- start collector ---
             collector_kwargs = {
-                "env_name": self.env_name,
+                "env_factory": self.env_factory,
                 "num_envs": self.num_envs,
                 "replay_buffer": replay_buffer,
                 "algo_type": self.algo_type,
@@ -982,6 +984,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                 "trace_thread_time": self.trace_thread_time,
                 "nan_guard_cfg": self.nan_guard_cfg,
                 "torch_thread_runtime": self.torch_thread_runtime,
+                "backend_device_binder": self.backend_device_binder,
             }
             with torch_thread_env(self.torch_thread_runtime, role="collector"):
                 self._start_collector(
