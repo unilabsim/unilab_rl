@@ -117,10 +117,7 @@ class FakeVecEnv:
             self.init_state()
         n = len(env_indices)
         return (
-            {
-                k: np.zeros((n, d), dtype=np.float32)
-                for k, d in self._obs_groups_spec.items()
-            },
+            {k: np.zeros((n, d), dtype=np.float32) for k, d in self._obs_groups_spec.items()},
             {},
         )
 

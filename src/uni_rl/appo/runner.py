@@ -119,9 +119,7 @@ class APPORunner(AsyncRunner):
     def _detect_dims(self):
         """Create a tiny probe env via the injected factory, read dims, close it."""
         apply_training_seed(self.seed, torch_runtime=True, cuda=True)
-        env = self.env_factory(
-            1, self.env_cfg_overrides if self.env_cfg_overrides else None
-        )
+        env = self.env_factory(1, self.env_cfg_overrides if self.env_cfg_overrides else None)
         obs_dim, critic_dim = get_obs_dims(dict(env.obs_groups_spec))
         self.critic_dim = critic_dim
         self.critic_input_dim = get_critic_base_dim(dict(env.obs_groups_spec))
