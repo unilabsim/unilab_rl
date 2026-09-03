@@ -1846,7 +1846,7 @@ wheels = [
 ]
 
 [[package]]
-name = "uni-rl"
+name = "unilab-rl"
 version = "0.1.0a1"
 source = { editable = "." }
 dependencies = [
