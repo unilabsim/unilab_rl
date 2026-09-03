@@ -1,0 +1,75 @@
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "uni-rl"
+version = "0.1.0a1"
+description = "Reinforcement learning algorithms and async runtimes extracted from UniLab (PPO/APPO/SAC/TD3/FlashSAC/HIM-PPO/HORA)"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "UniLab contributors" }]
+keywords = ["reinforcement-learning", "robotics", "gpu-simulation"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "numpy",
+    "torch>=2.7.0",
+    "tensordict",
+    "omegaconf",
+    "hydra-core",
+    "rsl-rl-lib>=5.0.0",
+    "tensorboard",
+    "wandb>=0.22.3",
+    "packaging",
+    "rich",
+]
+
+[project.urls]
+Repository = "https://github.com/unilabsim/uni_rl"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = [
+    "E501",
+    "N806",
+    "E402",
+    "F401",
+    "N801",
+    "F821",
+    "E741",
+    "N802",
+    "N803",
+    "N812",
+]
+
+[tool.mypy]
+mypy_path = "src"
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: long-running training or smoke tests",
+]
+addopts = "--tb=short -m 'not slow'"

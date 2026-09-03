@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+*.whl
+*.tar.gz
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.history/
+logs/
+wandb/
+.pypirc
