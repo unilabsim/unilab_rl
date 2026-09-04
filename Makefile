@@ -1,4 +1,4 @@
-.PHONY: setup sync test format build smoke publish-test
+.PHONY: setup sync test format build smoke
 
 setup: sync
 
@@ -17,6 +17,3 @@ build:
 
 smoke: build
 	uv run --isolated --no-project --with dist/*.whl -- python -c "import uni_rl; print(uni_rl.__version__)"
-
-publish-test: build
-	UV_PUBLISH_URL=https://test.pypi.org/legacy/ UV_PUBLISH_TOKEN=$$(python3 -c "import configparser, os; c = configparser.ConfigParser(); c.read(os.path.expanduser('~/.pypirc')); print(c['testpypi']['password'])") uv publish dist/*

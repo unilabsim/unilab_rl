@@ -2,12 +2,12 @@
 requires = ["uv_build>=0.12.1,<0.13"]
 build-backend = "uv_build"
 
-# NOTE: the requested distribution name `uni-rl` is unregistrable on both PyPI and
-# TestPyPI (ultranormalized collision with the existing `unirl` project).
+# NOTE: the requested distribution name `uni-rl` is unregistrable on PyPI
+# (ultranormalized collision with the existing `unirl` project).
 # Distribution name is therefore `unilab-rl`; the import namespace stays `uni_rl`.
 [project]
 name = "unilab-rl"
-version = "0.3.0"
+version = "1.0.0"
 description = "Reinforcement learning algorithms and async runtimes extracted from UniLab (PPO/APPO/SAC/TD3/FlashSAC/HIM-PPO/HORA)"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"

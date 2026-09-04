@@ -41,7 +41,7 @@ PR 合入 `main` 前必须 CI 全绿（ruff lint / ruff format / mypy / pyright 
 3. `.github/workflows/release.yml` 自动：`uv build` → wheel 与 sdist 隔离 smoke → 发布到 **PyPI**（`PYPI_TOKEN` secret）。
 4. 验证：`uv run --isolated --no-project --with unilab-rl==<X.Y.Z> -- python -c "import uni_rl; print(uni_rl.__version__)"`（CDN 滞后时加 `--refresh-package unilab-rl` 重试）。
 
-正式发布渠道为 PyPI（自 0.2.0 起；此前拆分期曾发布 TestPyPI）。
+正式发布渠道为 PyPI。
 
 ## 新算法扩展方式（new algorithm recipe）
 

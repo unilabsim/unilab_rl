@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-09-04
+
+First stable release. The public contract (`uni_rl.env_contract` protocols and
+factory signature, runner / `runtime_resolver` conventions, algorithm config
+keys) is now covered by semantic versioning.
+
+### Added
+
+- `README_zh.md`（简体中文 README）and a Citation section (UniLab paper,
+  `jia2026unilab`) in both READMEs.
+
+### Changed
+
+- Rewrote the README: documents the relationship with UniLab, PyPI
+  installation, env-contract usage, and development commands. PyPI is the
+  release channel; TestPyPI instructions were removed.
+
 ## [0.3.0] - 2026-09-04
 
 ### Added
@@ -25,8 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Grouped algorithm packages under `uni_rl.algos` (`appo`, `fast_sac`,
   `fast_td3`, `flash_sac`, `him_ppo`, `hora`, `rsl_rl` wrappers, `common`).
-- Added CI (ruff / mypy / pyright / pytest+coverage) and TestPyPI release
-  workflows, plus `AGENTS.md` contributor guidance.
+- Added CI (ruff / mypy / pyright / pytest+coverage) and release workflows,
+  plus `AGENTS.md` contributor guidance.
 
 ## [0.1.0] - 2026-09-04
 
