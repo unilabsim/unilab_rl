@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from uni_rl.common.actor_factory import build_actor
+from uni_rl.algos.common.actor_factory import build_actor
 
 
 class TestBuildActor:

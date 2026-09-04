@@ -7,7 +7,7 @@ import pytest
 import torch
 
 import uni_rl.offpolicy.worker as worker_module
-from uni_rl.common.collector_timing import extract_env_step_breakdown_timing_ms
+from uni_rl.algos.common.collector_timing import extract_env_step_breakdown_timing_ms
 from uni_rl.offpolicy.worker import (
     _publish_inference_tick,
     _wait_for_inference_tick,

@@ -8,7 +8,7 @@ from typing import Any, cast
 import numpy as np
 import torch
 
-from uni_rl.common.collector_timing import extract_env_step_breakdown_timing_ms
+from uni_rl.algos.common.collector_timing import extract_env_step_breakdown_timing_ms
 from uni_rl.env_contract import EnvFactory
 from uni_rl.offpolicy.thread_budget import apply_torch_thread_runtime
 from uni_rl.utils.device import configure_backend_process_device
@@ -65,7 +65,7 @@ def resolve_offpolicy_actor_priv_info(
     if algo_type != "hora_sac":
         return None
 
-    from uni_rl.hora.observations import split_hora_obs_with_priv_info
+    from uni_rl.algos.hora.observations import split_hora_obs_with_priv_info
 
     _, _, priv_info_np = split_hora_obs_with_priv_info(
         {"obs": obs_np, "critic": critic_np},

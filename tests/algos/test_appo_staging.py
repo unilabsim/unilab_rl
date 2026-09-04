@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from uni_rl.appo.staging import RolloutStagingPool
+from uni_rl.algos.appo.staging import RolloutStagingPool
 
 _NUM_ENVS = 2
 _NUM_STEPS = 3

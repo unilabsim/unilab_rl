@@ -629,15 +629,15 @@ def test_drain_metrics_propagates_collector_error():
 @pytest.mark.parametrize("algo_type", ["sac", "td3", "flashsac"])
 def test_learner_inference_matches_existing_actor_exploration(algo_type: str) -> None:
     if algo_type == "sac":
-        from uni_rl.fast_sac.learner import SACActor
+        from uni_rl.algos.fast_sac.learner import SACActor
 
         actor = SACActor(3, 2, hidden_dim=8, use_layer_norm=False)
     elif algo_type == "flashsac":
-        from uni_rl.flash_sac.network import FlashSACActor
+        from uni_rl.algos.flash_sac.network import FlashSACActor
 
         actor = FlashSACActor(num_blocks=1, input_dim=3, hidden_dim=8, action_dim=2)
     else:
-        from uni_rl.fast_td3.learner import TD3Actor
+        from uni_rl.algos.fast_td3.learner import TD3Actor
 
         actor = TD3Actor(3, 2, num_envs=2, init_scale=0.01, hidden_dim=8)
     expected_actor = copy.deepcopy(actor)
@@ -678,7 +678,7 @@ def test_learner_inference_matches_existing_actor_exploration(algo_type: str) ->
 
 
 def test_hora_learner_inference_uses_privileged_context() -> None:
-    from uni_rl.hora.sac_models import HoraSACActor
+    from uni_rl.algos.hora.sac_models import HoraSACActor
 
     actor = HoraSACActor(
         obs_dim=3,

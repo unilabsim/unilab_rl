@@ -4,7 +4,7 @@ import queue
 
 import numpy as np
 
-from uni_rl.appo.worker import (
+from uni_rl.algos.appo.worker import (
     compute_rollout_active_steps_per_sec,
     compute_timeout_bootstrap_correction,
     put_latest_metrics,

@@ -8,31 +8,31 @@ from rsl_rl.utils import resolve_callable
 
 
 def test_hora_package_import_keeps_appo_lazy() -> None:
-    sys.modules.pop("uni_rl.hora", None)
-    sys.modules.pop("uni_rl.hora.appo", None)
+    sys.modules.pop("uni_rl.algos.hora", None)
+    sys.modules.pop("uni_rl.algos.hora.appo", None)
 
-    importlib.import_module("uni_rl.hora")
+    importlib.import_module("uni_rl.algos.hora")
 
-    assert "uni_rl.hora.appo" not in sys.modules
+    assert "uni_rl.algos.hora.appo" not in sys.modules
 
 
 def test_resolve_callable_loads_hora_ppo_from_package_export() -> None:
-    resolved = resolve_callable("uni_rl.hora:HoraPPO")
+    resolved = resolve_callable("uni_rl.algos.hora:HoraPPO")
 
-    from uni_rl.hora.ppo import HoraPPO
+    from uni_rl.algos.hora.ppo import HoraPPO
 
     assert resolved is HoraPPO
 
 
 def test_rsl_rl_runtime_resolver_loads_hora_wrapper_from_owner_marker() -> None:
-    from uni_rl.hora.rsl_rl import HoraRslRlVecEnvWrapper
-    from uni_rl.rsl_rl import RslRlVecEnvWrapper
-    from uni_rl.rsl_rl_runtime import resolve_rsl_rl_ppo_runtime
+    from uni_rl.algos.hora.rsl_rl import HoraRslRlVecEnvWrapper
+    from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper
+    from uni_rl.algos.rsl_rl_runtime import resolve_rsl_rl_ppo_runtime
 
     runtime = resolve_rsl_rl_ppo_runtime(
         {
             "runtime_impl": "hora_ppo",
-            "runtime_resolver": "uni_rl.hora.rsl_rl:resolve_hora_ppo_runtime",
+            "runtime_resolver": "uni_rl.algos.hora.rsl_rl:resolve_hora_ppo_runtime",
         },
         default_wrapper_cls=RslRlVecEnvWrapper,
     )
@@ -41,8 +41,8 @@ def test_rsl_rl_runtime_resolver_loads_hora_wrapper_from_owner_marker() -> None:
 
 
 def test_rsl_rl_runtime_resolver_rejects_unresolved_custom_runtime() -> None:
-    from uni_rl.rsl_rl import RslRlVecEnvWrapper
-    from uni_rl.rsl_rl_runtime import resolve_rsl_rl_ppo_runtime
+    from uni_rl.algos.rsl_rl import RslRlVecEnvWrapper
+    from uni_rl.algos.rsl_rl_runtime import resolve_rsl_rl_ppo_runtime
 
     with pytest.raises(ValueError, match="runtime_impl='hora_ppo'.*runtime_resolver"):
         resolve_rsl_rl_ppo_runtime(

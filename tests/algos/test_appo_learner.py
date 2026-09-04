@@ -4,8 +4,8 @@ from typing import Any
 
 import torch
 
-from uni_rl.appo.learner import APPOLearner
-from uni_rl.hora.appo_learner import HoraAPPOLearner
+from uni_rl.algos.appo.learner import APPOLearner
+from uni_rl.algos.hora.appo_learner import HoraAPPOLearner
 
 
 def test_appo_learner_compile_targets_minibatch_loss(monkeypatch) -> None:
