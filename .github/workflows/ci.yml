@@ -59,8 +59,8 @@ jobs:
           persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
-      - name: Install dependencies
-        run: uv sync
+      - name: Install dependencies (CPU torch, no CUDA wheels)
+        run: make sync-ci
       - name: Check
         run: uv run --no-sync mypy src/uni_rl
 
@@ -73,8 +73,8 @@ jobs:
           persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
-      - name: Install dependencies
-        run: uv sync
+      - name: Install dependencies (CPU torch, no CUDA wheels)
+        run: make sync-ci
       - name: Check
         run: uv run --no-sync pyright
 
@@ -90,24 +90,6 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dependencies (CPU torch, no CUDA wheels)
-        run: |
-          uv sync \
-            --no-install-package torch \
-            --no-install-package nvidia-cublas-cu12 \
-            --no-install-package nvidia-cuda-cupti-cu12 \
-            --no-install-package nvidia-cuda-nvrtc-cu12 \
-            --no-install-package nvidia-cuda-runtime-cu12 \
-            --no-install-package nvidia-cudnn-cu12 \
-            --no-install-package nvidia-cufft-cu12 \
-            --no-install-package nvidia-cufile-cu12 \
-            --no-install-package nvidia-curand-cu12 \
-            --no-install-package nvidia-cusolver-cu12 \
-            --no-install-package nvidia-cusparse-cu12 \
-            --no-install-package nvidia-cusparselt-cu12 \
-            --no-install-package nvidia-nccl-cu12 \
-            --no-install-package nvidia-nvjitlink-cu12 \
-            --no-install-package nvidia-nvtx-cu12 \
-            --no-install-package triton
-          uv pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+        run: make sync-ci
       - name: Test with coverage
         run: uv run --no-sync pytest --cov=src/uni_rl --cov-report "markdown-append:${GITHUB_STEP_SUMMARY:-/dev/null}" --cov-fail-under=50

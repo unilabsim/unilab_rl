@@ -24,6 +24,7 @@ uni_rl（distribution 名 `unilab-rl`）是从 UniLab 拆出的 **RL 算法与�
 ## 开发命令
 
 - `make sync` / `uv sync` — 安装依赖（dev group 含 pytest / ruff / mypy / pyright）
+- `make sync-ci` — CI 专用：跳过 CUDA 轮子（nvidia-* / triton，约 2 GB），改装 CPU torch；mypy / pyright / test job 共用
 - `make test` / `uv run pytest` — 全量测试（默认排除 `slow` marker）
 - `make format` — ruff check --fix + ruff format
 - `uv run mypy src/uni_rl` / `uv run pyright` — 类型 gate（pyright 固定 1.1.408，见 pyproject 注释）
