@@ -18,6 +18,12 @@ Contract summary (numpy-based, autoresetting vectorized env):
 - ``reset(env_indices)`` returns ``(obs_dict, info_dict)`` for the selected
   envs; ``init_state()`` performs cold-path initialization and returns the
   first state; ``state`` is ``None`` before ``init_state()``.
+- Optionally, an env may expose ``algo_capabilities`` (see
+  :class:`SupportsAlgoCapabilitiesProtocol`) carrying env metadata such as
+  per-dimension action bounds and joint names, for algorithm-side features
+  like per-joint action scaling or symmetry augmentation. Read it only on
+  cold paths (runner init, dim probe) via :func:`get_algo_capabilities` —
+  never inside ``step``/``reset`` hot loops.
 
 Because collectors run in ``multiprocessing`` spawn subprocesses, an
 ``EnvFactory`` must be picklable by reference — use a top-level function or
@@ -27,6 +33,7 @@ Because collectors run in ``multiprocessing`` spawn subprocesses, an
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
@@ -49,6 +56,49 @@ class EnvPlayCapabilitiesProtocol(Protocol):
     """Playback capabilities read by NaN-guard wiring in collectors."""
 
     supports_physics_state_playback: bool
+
+
+@runtime_checkable
+class EnvAlgoCapabilitiesProtocol(Protocol):
+    """Optional env metadata for algorithm-side features (all fields optional).
+
+    Every field defaults to ``None`` meaning "not provided"; consumers must
+    fall back gracefully instead of requiring any field. Read via
+    :func:`get_algo_capabilities` on cold paths only (runner init, dim
+    probe) — never inside ``step``/``reset`` hot loops.
+    """
+
+    @property
+    def action_low(self) -> np.ndarray | None:
+        """Per-dimension action lower bounds, shape ``(action_dim,)``."""
+        ...
+
+    @property
+    def action_high(self) -> np.ndarray | None:
+        """Per-dimension action upper bounds, shape ``(action_dim,)``."""
+        ...
+
+    @property
+    def joint_names(self) -> tuple[str, ...] | None:
+        """Joint names in action order, for symmetry-augmentation maps."""
+        ...
+
+
+@dataclass(frozen=True)
+class EnvAlgoCapabilities:
+    """Default ``EnvAlgoCapabilitiesProtocol`` carrier with all fields unset."""
+
+    action_low: np.ndarray | None = None
+    action_high: np.ndarray | None = None
+    joint_names: tuple[str, ...] | None = None
+
+
+@runtime_checkable
+class SupportsAlgoCapabilitiesProtocol(Protocol):
+    """Optional provider protocol: envs expose ``algo_capabilities``."""
+
+    @property
+    def algo_capabilities(self) -> EnvAlgoCapabilitiesProtocol: ...
 
 
 @runtime_checkable
@@ -104,9 +154,27 @@ class EnvProtocol(Protocol):
 # (``num_envs=N``). Must be picklable — see module docstring.
 EnvFactory = Callable[[int, Mapping[str, Any] | None], EnvProtocol]
 
+
+def get_algo_capabilities(env: Any) -> EnvAlgoCapabilitiesProtocol:
+    """Return the env's optional algo capabilities, or an all-``None`` default.
+
+    Envs that do not implement :class:`SupportsAlgoCapabilitiesProtocol` get
+    an :class:`EnvAlgoCapabilities` instance with every field ``None``, so
+    consumers never need attribute probing. Cold paths only (runner init,
+    dim probe) — do not call from ``step``/``reset`` hot loops.
+    """
+    if isinstance(env, SupportsAlgoCapabilitiesProtocol):
+        return env.algo_capabilities
+    return EnvAlgoCapabilities()
+
+
 __all__ = [
+    "EnvAlgoCapabilities",
+    "EnvAlgoCapabilitiesProtocol",
     "EnvFactory",
     "EnvPlayCapabilitiesProtocol",
     "EnvProtocol",
     "EnvStateProtocol",
+    "SupportsAlgoCapabilitiesProtocol",
+    "get_algo_capabilities",
 ]

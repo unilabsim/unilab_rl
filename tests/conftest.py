@@ -54,13 +54,19 @@ class _FakePlayCapabilities:
 
 
 class FakeVecEnv:
-    """Minimal ``EnvProtocol`` implementation for runner/collector unit tests."""
+    """Minimal ``EnvProtocol`` implementation for runner/collector unit tests.
+
+    Pass ``algo_capabilities`` to make the env satisfy
+    ``SupportsAlgoCapabilitiesProtocol``; by default the property is absent
+    and ``get_algo_capabilities`` falls back to the all-``None`` default.
+    """
 
     def __init__(
         self,
         num_envs: int,
         obs_groups_spec: dict[str, int],
         action_dim: int,
+        algo_capabilities: Any = None,
     ) -> None:
         self._num_envs = num_envs
         self._obs_groups_spec = dict(obs_groups_spec)
@@ -68,6 +74,8 @@ class FakeVecEnv:
         self._state: _FakeEnvState | None = None
         self.closed = False
         self.cfg = type("Cfg", (), {"max_episode_seconds": 1.0, "ctrl_dt": 0.02})()
+        if algo_capabilities is not None:
+            self.algo_capabilities = algo_capabilities
 
     @property
     def num_envs(self) -> int:
@@ -139,14 +147,16 @@ class FakeEnvFactory:
         self,
         obs_groups_spec: dict[str, int] | None = None,
         action_dim: int = 2,
+        algo_capabilities: Any = None,
     ) -> None:
         self.obs_groups_spec = dict(obs_groups_spec or {"obs": 4, "critic": 7})
         self.action_dim = action_dim
+        self.algo_capabilities = algo_capabilities
         self.calls: list[tuple[int, Any]] = []
 
     def __call__(self, num_envs: int, env_cfg_override: Any = None) -> FakeVecEnv:
         self.calls.append((num_envs, env_cfg_override))
-        return FakeVecEnv(num_envs, self.obs_groups_spec, self.action_dim)
+        return FakeVecEnv(num_envs, self.obs_groups_spec, self.action_dim, self.algo_capabilities)
 
 
 @pytest.fixture
