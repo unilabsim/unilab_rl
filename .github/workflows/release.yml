@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  publish-testpypi:
+  publish-pypi:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -24,7 +24,7 @@ jobs:
         run: uv run --isolated --no-project --with dist/*.whl -- python -c "import uni_rl; print(uni_rl.__version__)"
       - name: Smoke-test the sdist in an isolated env
         run: uv run --isolated --no-project --with dist/*.tar.gz -- python -c "import uni_rl; print(uni_rl.__version__)"
-      - name: Publish to TestPyPI
+      - name: Publish to PyPI
         env:
-          UV_PUBLISH_TOKEN: ${{ secrets.TESTPYPI_TOKEN }}
-        run: uv publish --publish-url https://test.pypi.org/legacy/ dist/*
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish dist/*
