@@ -4,7 +4,7 @@ Reinforcement learning algorithms and async runtimes extracted from
 [UniLab](https://github.com/unilabsim/UniLab), usable as a standalone package.
 
 Distribution name: `unilab-rl` · import namespace: `uni_rl` · repository:
-[unilabsim/unilab-rl](https://github.com/unilabsim/unilab-rl)
+[unilabsim/unilab_rl](https://github.com/unilabsim/unilab_rl)
 
 > Naming note: the originally intended distribution name `uni-rl` is unregistrable on
 > PyPI/TestPyPI because it ultranormalizes to the existing `unirl` project. The
