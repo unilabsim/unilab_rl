@@ -32,16 +32,16 @@ uni_rl（distribution 名 `unilab-rl`）是从 UniLab 拆出的 **RL 算法与�
 
 PR 合入 `main` 前必须 CI 全绿（ruff lint / ruff format / mypy / pyright / pytest+coverage）。本地等价于：`make format && uv run mypy src/uni_rl && uv run pyright && uv run pytest --cov=src/uni_rl`。
 
-## Release 流程（TestPyPI）
+## Release 流程（PyPI）
 
 语义化版本纪律（pre-1.0）：**public contract 变更至少 minor bump** —— public contract 包括 `env_contract`（协议 / factory 签名 / helper）、runner / runtime_resolver 约定、算法配置键（owner YAML 中 algo/\* 键名与语义）；内部修复、性能优化、文档与测试改动可 patch。每次 release（打 tag 前）必须在 `CHANGELOG.md`（Keep a Changelog 风格）补对应版本段落。
 
 1. 在 PR 中 bump `pyproject.toml` 的 `version` 并通过 CI 合入 main。
 2. 在 main 上打 tag：`git tag v<X.Y.Z> && git push origin v<X.Y.Z>`。
-3. `.github/workflows/release.yml` 自动：`uv build` → wheel 与 sdist 隔离 smoke → 发布到 **TestPyPI**（`TESTPYPI_TOKEN` secret）。
-4. 验证：`uv run --isolated --no-project --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ --with unilab-rl==<X.Y.Z> -- python -c "import uni_rl; print(uni_rl.__version__)"`（CDN 滞后时加 `--refresh-package unilab-rl` 重试）。
+3. `.github/workflows/release.yml` 自动：`uv build` → wheel 与 sdist 隔离 smoke → 发布到 **PyPI**（`PYPI_TOKEN` secret）。
+4. 验证：`uv run --isolated --no-project --with unilab-rl==<X.Y.Z> -- python -c "import uni_rl; print(uni_rl.__version__)"`（CDN 滞后时加 `--refresh-package unilab-rl` 重试）。
 
-正式发布到 PyPI 需要 maintainer 决策；当前只发布 TestPyPI。
+正式发布渠道为 PyPI（自 0.2.0 起；此前拆分期曾发布 TestPyPI）。
 
 ## 新算法扩展方式（new algorithm recipe）
 
