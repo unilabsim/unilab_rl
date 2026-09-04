@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from uni_rl.appo.learner import APPOLearner
+from uni_rl.algos.appo.learner import APPOLearner
 
 
 class _Actor(nn.Module):

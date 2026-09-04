@@ -6,7 +6,7 @@ from typing import Any
 
 import torch
 
-from uni_rl.common import compile as compile_helper
+from uni_rl.algos.common import compile as compile_helper
 
 
 def _without_triton(name: str, *args: Any, **kwargs: Any) -> Any:

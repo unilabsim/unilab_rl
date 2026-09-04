@@ -6,7 +6,7 @@ import sys
 from collections import deque
 from typing import Any
 
-from uni_rl.common.device import get_env_dims
+from uni_rl.algos.common.device import get_env_dims
 from uni_rl.env_contract import EnvFactory
 from uni_rl.ipc.async_runner import AsyncRunner
 from uni_rl.logging import OffPolicyLogger

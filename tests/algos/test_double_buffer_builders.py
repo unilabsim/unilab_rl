@@ -165,7 +165,7 @@ def _flashsac_cfg() -> Any:
 def test_sac_builder_forwards_backend_device_binder(
     monkeypatch: pytest.MonkeyPatch, with_binder: bool
 ) -> None:
-    import uni_rl.fast_sac.double_buffer as module
+    import uni_rl.algos.fast_sac.double_buffer as module
 
     monkeypatch.setattr(module, "FastSACLearner", _FakeLearner)
     monkeypatch.setattr(module, "DoubleBufferOffPolicyRunner", _FakeRunner)
@@ -189,7 +189,7 @@ def test_sac_builder_forwards_backend_device_binder(
 def test_td3_builder_forwards_backend_device_binder(
     monkeypatch: pytest.MonkeyPatch, with_binder: bool
 ) -> None:
-    import uni_rl.fast_td3.double_buffer as module
+    import uni_rl.algos.fast_td3.double_buffer as module
 
     monkeypatch.setattr(module, "FastTD3Learner", _FakeLearner)
     monkeypatch.setattr(module, "DoubleBufferOffPolicyRunner", _FakeRunner)
@@ -213,7 +213,7 @@ def test_td3_builder_forwards_backend_device_binder(
 def test_flashsac_builder_forwards_backend_device_binder(
     monkeypatch: pytest.MonkeyPatch, with_binder: bool
 ) -> None:
-    import uni_rl.flash_sac.double_buffer as module
+    import uni_rl.algos.flash_sac.double_buffer as module
 
     monkeypatch.setattr(module, "FlashSACLearner", _FakeLearner)
     monkeypatch.setattr(module, "DoubleBufferOffPolicyRunner", _FakeRunner)
