@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-testpypi:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.0.0
+      - name: Build distributions
+        run: uv build
+      - name: Smoke-test the wheel in an isolated env
+        run: uv run --isolated --no-project --with dist/*.whl -- python -c "import uni_rl; print(uni_rl.__version__)"
+      - name: Smoke-test the sdist in an isolated env
+        run: uv run --isolated --no-project --with dist/*.tar.gz -- python -c "import uni_rl; print(uni_rl.__version__)"
+      - name: Publish to TestPyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.TESTPYPI_TOKEN }}
+        run: uv publish --publish-url https://test.pypi.org/legacy/ dist/*

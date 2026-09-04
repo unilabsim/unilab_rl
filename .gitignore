@@ -13,3 +13,6 @@ dist/
 logs/
 wandb/
 .pypirc
+.coverage
+coverage.xml
+htmlcov/

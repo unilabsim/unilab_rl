@@ -47,6 +47,10 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy",
+    # Pinned: 1.1.411+ raises false positives against torch 2.8 stubs
+    # (reportPrivateImportUsage on torch._foreach_*) that UniLab's gate avoids
+    # by staying on 1.1.408.
+    "pyright==1.1.408",
 ]
 
 [tool.ruff]
@@ -72,6 +76,19 @@ ignore = [
 [tool.mypy]
 mypy_path = "src"
 explicit_package_bases = true
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+no_site_packages = true
+
+[tool.pyright]
+pythonVersion = "3.10"
+venvPath = "."
+venv = ".venv"
+include = ["src/uni_rl"]
+reportMissingImports = "warning"
+reportMissingModuleSource = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
