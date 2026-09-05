@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `uni_rl.utils.device.resolve_backend_process_device` now treats `newton`
+  like `mjwarp`: both backends require an explicit CUDA process device shared
+  with the learner, so off-policy collectors invoke the injected
+  `backend_device_binder` for `newton` runs instead of silently skipping the
+  binding (previously the spawned collector built the backend without a bound
+  device).
+
 ## [1.0.0] - 2026-09-04
 
 First stable release. The public contract (`uni_rl.env_contract` protocols and

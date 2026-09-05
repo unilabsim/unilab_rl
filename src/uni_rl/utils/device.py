@@ -8,22 +8,30 @@ from typing import Callable, cast
 
 import torch
 
+# Backends whose physics runtime requires an explicit CUDA process device
+# shared with the learner process.  The actual binding stays with the backend
+# owner (injected as ``bind_device``); this set only decides which backends a
+# worker must resolve a device for.
+_PROCESS_DEVICE_BACKENDS = frozenset({"mjwarp", "newton"})
+
 
 def resolve_backend_process_device(backend_type: str, learner_device: str | None) -> str | None:
     """Resolve the device a backend-bound worker process must occupy.
 
     Ported from UniLab's ``unilab.base.process_device`` (issue #1479) with
-    identical semantics: only ``mjwarp`` requires an explicit CUDA process
-    device shared with its learner; every other backend returns ``None``.
+    identical semantics: only ``mjwarp`` and ``newton`` require an explicit
+    CUDA process device shared with the learner; every other backend returns
+    ``None``.
     """
-    if backend_type != "mjwarp":
+    if backend_type not in _PROCESS_DEVICE_BACKENDS:
         return None
     if learner_device is None:
-        raise ValueError("mjwarp requires an explicit CUDA process device")
+        raise ValueError(f"{backend_type} requires an explicit CUDA process device")
     resolved = str(learner_device).strip()
     if resolved.split(":", 1)[0].lower() != "cuda":
         raise ValueError(
-            f"mjwarp requires a CUDA process device shared with its learner; got {resolved!r}"
+            f"{backend_type} requires a CUDA process device shared with its learner; "
+            f"got {resolved!r}"
         )
     return resolved
 

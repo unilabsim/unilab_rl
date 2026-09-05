@@ -186,3 +186,39 @@ def test_get_device_info_dict_reports_core_fields() -> None:
     assert "cpu_total_cores" in info
     assert "memory" in info
     assert "gpu_name" in info or "gpu_cores" in info
+
+
+@pytest.mark.parametrize("backend_type", ["mjwarp", "newton"])
+def test_resolve_backend_process_device_requires_cuda_for_bound_backends(
+    backend_type: str,
+) -> None:
+    assert device_mod.resolve_backend_process_device(backend_type, "cuda:1") == "cuda:1"
+
+    with pytest.raises(ValueError, match="explicit CUDA process device"):
+        device_mod.resolve_backend_process_device(backend_type, None)
+
+    with pytest.raises(ValueError, match="CUDA process device"):
+        device_mod.resolve_backend_process_device(backend_type, "cpu")
+
+
+@pytest.mark.parametrize("backend_type", ["mujoco", "motrix", "genesis", "cpu"])
+def test_resolve_backend_process_device_skips_unbound_backends(backend_type: str) -> None:
+    assert device_mod.resolve_backend_process_device(backend_type, "cuda:0") is None
+    assert device_mod.resolve_backend_process_device(backend_type, None) is None
+
+
+def test_configure_backend_process_device_binds_newton_with_injected_binder() -> None:
+    bound: list[str] = []
+
+    def bind_device(device: str) -> str:
+        bound.append(device)
+        return device
+
+    assert (
+        device_mod.configure_backend_process_device("newton", "cuda:2", bind_device=bind_device)
+        == "cuda:2"
+    )
+    assert bound == ["cuda:2"]
+
+    with pytest.raises(ValueError, match="no bind_device"):
+        device_mod.configure_backend_process_device("newton", "cuda:2")
