@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-06
+
 ### Fixed
 
 - `uni_rl.utils.device.resolve_backend_process_device` now treats `newton`
@@ -15,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `backend_device_binder` for `newton` runs instead of silently skipping the
   binding (previously the spawned collector built the backend without a bound
   device).
+- `DpRankSupervisor` now re-runs the downstream owner's original
+  `sys.argv[0]` entry script for spawned off-policy ranks instead of redirecting
+  it to the nonexistent `uni_rl/scripts/` directory, restoring multi-GPU
+  SAC/TD3 launches from installed consumers such as UniLab (#12).
 
 ## [1.0.0] - 2026-09-04
 
