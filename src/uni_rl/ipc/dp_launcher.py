@@ -23,8 +23,6 @@ UNILAB_DP_WORLD_SIZE = "UNILAB_DP_WORLD_SIZE"
 UNILAB_DP_DEVICES = "UNILAB_DP_DEVICES"
 UNILAB_DP_LOG_DIR = "UNILAB_DP_LOG_DIR"
 
-_SCRIPTS_ROOT = Path(__file__).resolve().parents[1] / "scripts"
-
 _WATCHDOG_INTERVAL_S = 0.5
 _COOPERATIVE_EXIT_GRACE_S = 10.0
 _TERMINATE_TIMEOUT_S = 10.0
@@ -285,6 +283,17 @@ def apply_dp_rank_config(cfg: Any, devices: tuple[int, ...] | None, rank: int) -
     return device
 
 
+def _current_entry_command() -> list[str]:
+    """Build the command used to re-enter the current training entry point.
+
+    The entry script belongs to the downstream owner (for example UniLab),
+    while this package only owns the data-parallel supervisor.  Reusing
+    ``sys.argv[0]`` keeps that ownership boundary intact and also preserves
+    the original script path for source checkouts and installed consumers.
+    """
+    return [sys.executable, sys.argv[0], *sys.argv[1:]]
+
+
 def _sigterm_system_exit(signum: int, _frame: Any) -> None:
     raise SystemExit(f"data-parallel rank 0 received signal {signum}")
 
@@ -357,11 +366,7 @@ class DpRankSupervisor:
                 env = base_env | {UNILAB_DP_RANK: str(rank)}
                 self._children.append(
                     subprocess.Popen(
-                        [
-                            sys.executable,
-                            str(_SCRIPTS_ROOT / Path(sys.argv[0]).name),
-                            *sys.argv[1:],
-                        ],
+                        _current_entry_command(),
                         env=env,
                         # Rank-local collectors inherit this group. The terminal
                         # only interrupts rank 0; the supervisor then forwards

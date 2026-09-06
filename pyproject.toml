@@ -7,7 +7,7 @@ build-backend = "uv_build"
 # Distribution name is therefore `unilab-rl`; the import namespace stays `uni_rl`.
 [project]
 name = "unilab-rl"
-version = "1.0.0"
+version = "1.1.0"
 description = "Reinforcement learning algorithms and async runtimes extracted from UniLab (PPO/APPO/SAC/TD3/FlashSAC/HIM-PPO/HORA)"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
