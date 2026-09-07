@@ -37,7 +37,7 @@ with your own environment stack.
 ## Contents
 
 - **On-policy**: PPO via [rsl_rl](https://github.com/leggedrobotics/rsl_rl)
-  (`FinalObservationAwarePPO`, `RslRlVecEnvWrapper`), HIM-PPO, and the HORA
+  (`FinalObservationAwarePPO`, `RslRlVecEnvWrapper`), and the HORA
   teacher-policy suite (incl. distillation trainer)
 - **Async PPO (APPO)**: native collector/learner multiprocess implementation
 - **Off-policy**: FastSAC, FastTD3, and FlashSAC with double-buffer async runners
@@ -48,7 +48,7 @@ with your own environment stack.
 ## Layout
 
 - `uni_rl.algos.*` — the algorithm layer: on-policy (`rsl_rl` PPO wrappers,
-  `him_ppo`, `hora` teacher/distillation suite), async on-policy (`appo`),
+  `hora` teacher/distillation suite), async on-policy (`appo`),
   off-policy learners (`fast_sac`, `fast_td3`, `flash_sac`), and shared
   algorithm helpers (`common`)
 - `uni_rl.ipc` — runtime infrastructure: async runner, shared-memory
