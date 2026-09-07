@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional PPO runtime runner selection and `TrainingStateOnPolicyRunner`, with
+  an explicit versioned checkpoint envelope for downstream-owned curriculum
+  progress. Existing PPO runners are unchanged; requested state restoration
+  rejects missing or incompatible envelopes rather than restarting a curriculum
+  ([#16](https://github.com/unilabsim/unilab_rl/issues/16)).
+
 ### Removed
 
 - The HIM-PPO implementation and tests moved to

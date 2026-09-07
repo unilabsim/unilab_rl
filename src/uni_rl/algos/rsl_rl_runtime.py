@@ -13,6 +13,7 @@ class RslRlPPORuntime:
     """Resolved PPO runtime consumed by the generic RSL-RL entrypoint."""
 
     wrapper_cls: type[RslRlVecEnvWrapper]
+    runner_cls: type[Any] | None = None
 
 
 def resolve_rsl_rl_ppo_runtime(
@@ -46,4 +47,9 @@ def resolve_rsl_rl_ppo_runtime(
             f"PPO runtime resolver {runtime_resolver!r} must return an object with "
             "'wrapper_cls' attribute."
         )
-    return RslRlPPORuntime(wrapper_cls=wrapper_cls)
+    runner_cls = getattr(runtime, "runner_cls", None)
+    if runner_cls is not None and not isinstance(runner_cls, type):
+        raise TypeError(
+            f"PPO runtime resolver {runtime_resolver!r} 'runner_cls' must be a class or None."
+        )
+    return RslRlPPORuntime(wrapper_cls=wrapper_cls, runner_cls=runner_cls)
