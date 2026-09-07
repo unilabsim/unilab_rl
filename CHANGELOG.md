@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The HIM-PPO implementation and tests moved to
+  [legged-manipulation_unilab](https://github.com/unilabsim/legged-manipulation_unilab)
+  under [UniLab #1528](https://github.com/unilabsim/UniLab/issues/1528).
+  The old import namespace is removed without a forwarding shim. The repository
+  version remains unchanged by maintainer request; coordinated consumers pin
+  the migration commit until a separately authorized release.
+
 ## [1.1.0] - 2026-09-06
 
 ### Fixed
