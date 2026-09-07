@@ -2,7 +2,7 @@
 
 **Always use `uv run`, not python**.
 
-uni_rl（distribution 名 `unilab-rl`）是从 UniLab 拆出的 **RL 算法与异步 runtime** 独立包：PPO/APPO/SAC/TD3/FlashSAC/HIM-PPO/HORA 的 runner、learner、collector、IPC 与训练日志。
+uni_rl（distribution 名 `unilab-rl`）是从 UniLab 拆出的 **RL 算法与异步 runtime** 独立包：PPO/APPO/SAC/TD3/FlashSAC/HORA 的 runner、learner、collector、IPC 与训练日志。
 
 ## Core Principles
 
@@ -14,7 +14,7 @@ uni_rl（distribution 名 `unilab-rl`）是从 UniLab 拆出的 **RL 算法与�
 
 ## Layout
 
-- `src/uni_rl/algos/` — `appo`（异步 PPO）、`fast_sac` / `fast_td3` / `flash_sac`（off-policy learner + double-buffer builder）、`him_ppo`、`hora`（teacher / distillation 套件）、`rsl_rl.py` / `rsl_rl_ppo.py` / `rsl_rl_runtime.py`（rsl_rl 封装）、`common`（共享网络 / normalization / compile 辅助）
+- `src/uni_rl/algos/` — `appo`（异步 PPO）、`fast_sac` / `fast_td3` / `flash_sac`（off-policy learner + double-buffer builder）、`hora`（teacher / distillation 套件）、`rsl_rl.py` / `rsl_rl_ppo.py` / `rsl_rl_runtime.py`（rsl_rl 封装）、`common`（共享网络 / normalization / compile 辅助）
 - `src/uni_rl/ipc/` — async runner、shm rollout/replay buffer、replay pipeline、DP gradient sync、memory budget
 - `src/uni_rl/offpolicy/` — 通用 off-policy double-buffer runner 脚手架
 - `src/uni_rl/logging/` — tensorboard / wandb logger、trace recorder
