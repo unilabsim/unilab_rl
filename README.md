@@ -109,6 +109,7 @@ protocol, or the caller must pass `training_state_provider=` to the runner:
 def export_training_state(self) -> Mapping[str, object]:
     return {"schema": "my-task-v1", "steps": self.steps, "difficulty": self.difficulty}
 
+
 def import_training_state(self, state: Mapping[str, object]) -> None:
     # Validate the complete owner schema before changing any state.
     ...
