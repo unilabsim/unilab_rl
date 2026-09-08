@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.1] - 2026-09-08
 
 ### Added
 
@@ -20,9 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The HIM-PPO implementation and tests moved to
   [legged-manipulation_unilab](https://github.com/unilabsim/legged-manipulation_unilab)
   under [UniLab #1528](https://github.com/unilabsim/UniLab/issues/1528).
-  The old import namespace is removed without a forwarding shim. The repository
-  version remains unchanged by maintainer request; coordinated consumers pin
-  the migration commit until a separately authorized release.
+  The old import namespace is removed without a forwarding shim.
 
 ## [1.1.0] - 2026-09-06
 
