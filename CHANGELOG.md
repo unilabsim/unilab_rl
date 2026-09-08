@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.1] - 2026-09-08
+
+### Added
+
+- Optional PPO runtime runner selection and `TrainingStateOnPolicyRunner`, with
+  an explicit versioned checkpoint envelope for downstream-owned curriculum
+  progress. Existing PPO runners are unchanged; requested state restoration
+  rejects missing or incompatible envelopes rather than restarting a curriculum
+  ([#16](https://github.com/unilabsim/unilab_rl/issues/16)).
+
+### Removed
+
+- The HIM-PPO implementation and tests moved to
+  [legged-manipulation_unilab](https://github.com/unilabsim/legged-manipulation_unilab)
+  under [UniLab #1528](https://github.com/unilabsim/UniLab/issues/1528).
+  The old import namespace is removed without a forwarding shim.
 
 ## [1.1.0] - 2026-09-06
 

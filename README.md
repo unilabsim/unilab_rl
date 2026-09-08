@@ -37,7 +37,7 @@ with your own environment stack.
 ## Contents
 
 - **On-policy**: PPO via [rsl_rl](https://github.com/leggedrobotics/rsl_rl)
-  (`FinalObservationAwarePPO`, `RslRlVecEnvWrapper`), HIM-PPO, and the HORA
+  (`FinalObservationAwarePPO`, `RslRlVecEnvWrapper`), and the HORA
   teacher-policy suite (incl. distillation trainer)
 - **Async PPO (APPO)**: native collector/learner multiprocess implementation
 - **Off-policy**: FastSAC, FastTD3, and FlashSAC with double-buffer async runners
@@ -48,7 +48,7 @@ with your own environment stack.
 ## Layout
 
 - `uni_rl.algos.*` — the algorithm layer: on-policy (`rsl_rl` PPO wrappers,
-  `him_ppo`, `hora` teacher/distillation suite), async on-policy (`appo`),
+  `hora` teacher/distillation suite), async on-policy (`appo`),
   off-policy learners (`fast_sac`, `fast_td3`, `flash_sac`), and shared
   algorithm helpers (`common`)
 - `uni_rl.ipc` — runtime infrastructure: async runner, shared-memory
@@ -93,6 +93,44 @@ protocol: dict observations keyed by observation group (`obs_groups_spec`),
 contract, and the *new algorithm recipe* section in
 [`AGENTS.md`](AGENTS.md) for how to plug in a custom algorithm via
 `runtime_resolver` without forking.
+
+### PPO curriculum checkpoint state
+
+An optional `RslRlPPORuntime.runner_cls` lets an entrypoint select a custom
+runner alongside its wrapper. `None` keeps the entrypoint's existing standard
+runner; older wrapper-only resolvers continue to work.
+
+For training that must restore curriculum progress, select
+`uni_rl.algos.rsl_rl_training_state.TrainingStateOnPolicyRunner`. Its wrapper
+must implement the explicit `uni_rl.training_state.TrainingStateProvider`
+protocol, or the caller must pass `training_state_provider=` to the runner:
+
+```python
+def export_training_state(self) -> Mapping[str, object]:
+    return {"schema": "my-task-v1", "steps": self.steps, "difficulty": self.difficulty}
+
+
+def import_training_state(self, state: Mapping[str, object]) -> None:
+    # Validate the complete owner schema before changing any state.
+    ...
+```
+
+The runner stores a version-1 envelope in
+`checkpoint["infos"]["uni_rl_training_state"]`; the payload is plain JSON data
+and the provider owns its schema/version. Arrays must be converted explicitly
+to lists. The runner never discovers a nested environment or serializes owner
+objects. Existing algorithm, optimizer, iteration, and logger behavior stays in
+the parent runner.
+
+`load()` requires valid training state by default. Only an explicit actor-only
+`load_cfg={"actor": True}` may use `restore_training_state=False` for a legacy checkpoint. Envelope
+errors are rejected before algorithm loading; provider import errors propagate
+and must abort resume. Loading the algorithm and provider is not a transactional
+rollback. This contract covers training progress, not physics or RNG snapshots.
+
+The runner is independent of any particular task or simulator. The downstream
+provider must restore its own counters and adaptive curriculum state together;
+restoring a derived counter alone is insufficient if the next step recomputes it.
 
 ## Design contract
 
