@@ -30,7 +30,7 @@ from uni_rl.offpolicy.runner import (
 
 @pytest.mark.parametrize(
     ("algo_type", "expected"),
-    [("sac", "SAC"), ("td3", "TD3"), ("flashsac", "FlashSAC"), ("hora_sac", "HORA_SAC")],
+    [("sac", "SAC"), ("td3", "TD3"), ("flashsac", "FlashSAC"), ("my_algo", "MY_ALGO")],
 )
 def test_algo_display_name(algo_type, expected):
     assert algo_display_name(algo_type) == expected
@@ -677,39 +677,48 @@ def test_learner_inference_matches_existing_actor_exploration(algo_type: str) ->
         torch.testing.assert_close(actor._repeat_target, expected_actor._repeat_target)
 
 
-def test_hora_learner_inference_uses_privileged_context() -> None:
-    from uni_rl.algos.hora.sac_models import HoraSACActor
+def test_adapter_learner_inference_uses_actor_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import uni_rl.offpolicy.actor_adapter as actor_adapter_module
 
-    actor = HoraSACActor(
-        obs_dim=3,
-        priv_info_dim=2,
-        action_dim=2,
-        hidden_dim=8,
-        priv_mlp_hidden_dims=(4, 2),
-        priv_info_embed_dim=2,
-        use_layer_norm=False,
+    class _DummyPrivInfoActor:
+        def explore(
+            self,
+            obs: torch.Tensor,
+            priv_info: torch.Tensor,
+            deterministic: bool = False,
+        ) -> torch.Tensor:
+            assert not deterministic
+            return obs[:, :2] + priv_info
+
+    monkeypatch.setitem(
+        actor_adapter_module._ADAPTERS,
+        "dummy_priv_sac",
+        actor_adapter_module.OffPolicyActorAdapter(
+            algo_type="dummy_priv_sac",
+            sample_actions=lambda actor, obs, dones, priv: actor.explore(
+                obs, priv, deterministic=False
+            ),
+            actor_context_from_obs=lambda obs_device, obs_dim: obs_device[:, obs_dim:],
+        ),
     )
-    expected_actor = copy.deepcopy(actor)
+
+    actor = _DummyPrivInfoActor()
     observations = np.arange(6, dtype=np.float32).reshape(2, 3) / 10.0
     priv_info = np.arange(4, dtype=np.float32).reshape(2, 2) / 10.0
     actor_input = np.concatenate((observations, priv_info), axis=1)
     dones = np.zeros(2, dtype=np.float32)
-    torch.manual_seed(23)
-    expected = expected_actor.explore(
-        torch.from_numpy(observations),
-        torch.from_numpy(priv_info),
-        deterministic=False,
-    )
+    expected = actor.explore(torch.from_numpy(observations), torch.from_numpy(priv_info))
 
     runner = object.__new__(device_runner_module.DoubleBufferOffPolicyRunner)
     runner.device = "cpu"
     runner.obs_dim = 3
     runner.obs_normalization = False
-    runner.algo_type = "hora_sac"
+    runner.algo_type = "dummy_priv_sac"
     runner.learner = SimpleNamespace(actor=actor)
     slot = SharedInferenceSlot(2, 5, 2)
     slot.publish_observation(tick_id=5, observations=actor_input, dones=dones)
-    torch.manual_seed(23)
     runner._serve_learner_inference(
         slot,
         tick_id=5,

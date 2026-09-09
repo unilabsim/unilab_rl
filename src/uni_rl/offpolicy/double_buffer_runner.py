@@ -25,6 +25,7 @@ from uni_rl.ipc.replay_pipelines.gpu_resident import (
     require_offpolicy_replay_device,
 )
 from uni_rl.logging import OffPolicyLogger, TraceRecorder
+from uni_rl.offpolicy.actor_adapter import get_offpolicy_actor_adapter
 from uni_rl.offpolicy.runner import (
     OffPolicyRunner,
     build_offpolicy_sample_info,
@@ -607,7 +608,10 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         h2d_end_ns = time.perf_counter_ns()
 
         actor_obs = obs_device[:, : self.obs_dim]
-        actor_context = obs_device[:, self.obs_dim :] if self.algo_type == "hora_sac" else None
+        actor_adapter = get_offpolicy_actor_adapter(self.algo_type)
+        actor_context = None
+        if actor_adapter is not None and actor_adapter.actor_context_from_obs is not None:
+            actor_context = actor_adapter.actor_context_from_obs(obs_device, self.obs_dim)
         if self.obs_normalization:
             actor_obs = self.learner.obs_normalizer(actor_obs, update=False)
         forward_start_ns = time.perf_counter_ns()
@@ -972,6 +976,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                 "num_envs": self.num_envs,
                 "replay_buffer": replay_buffer,
                 "algo_type": self.algo_type,
+                "actor_adapter_modules": list(self.actor_adapter_modules),
                 "metrics_queue": metrics_queue,
                 "inference_request_queue": inference_request_queue,
                 "inference_response_queue": inference_response_queue,

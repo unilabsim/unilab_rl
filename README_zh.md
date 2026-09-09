@@ -32,8 +32,7 @@ env 注入 `uni_rl`。`uni_rl` 永远不 import `unilab` / `unisim`，也不自�
 ## 内容
 
 - **On-policy**：基于 [rsl_rl](https://github.com/leggedrobotics/rsl_rl)
-  的 PPO（`FinalObservationAwarePPO`、`RslRlVecEnvWrapper`），
-  以及 HORA teacher-policy 套件（含蒸馏 trainer）
+  的 PPO（`FinalObservationAwarePPO`、`RslRlVecEnvWrapper`）
 - **异步 PPO（APPO)**：原生 collector/learner 多进程实现
 - **Off-policy**：FastSAC、FastTD3、FlashSAC，配 double-buffer 异步 runner
 - **Runtime 基础设施**：共享内存 rollout/replay buffer、replay pipeline、
@@ -41,9 +40,9 @@ env 注入 `uni_rl`。`uni_rl` 永远不 import `unilab` / `unisim`，也不自�
 
 ## 目录结构
 
-- `uni_rl.algos.*` — 算法层：on-policy(`rsl_rl` PPO 封装、
-  `hora` teacher/蒸馏套件）、异步 on-policy(`appo`)、off-policy learner
-  (`fast_sac`、`fast_td3`、`flash_sac`）与共享算法辅助（`common`)
+- `uni_rl.algos.*` — 算法层：on-policy(`rsl_rl` PPO 封装）、异步
+  on-policy(`appo`)、off-policy learner(`fast_sac`、`fast_td3`、
+  `flash_sac`）与共享算法辅助（`common`)
 - `uni_rl.ipc` — runtime 基础设施：异步 runner、共享内存 rollout/replay
   buffer、replay pipeline、DP 梯度同步、显存预算
 - `uni_rl.offpolicy` — 通用 off-policy double-buffer runner 脚手架

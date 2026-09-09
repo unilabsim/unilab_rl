@@ -18,11 +18,37 @@ class OffPolicyRuntime:
     learner_cls: type[Any] | None = None
     algo_type: str | None = None
     actor_kwargs: dict[str, Any] = field(default_factory=dict)
+    actor_adapter_modules: tuple[str, ...] = ()
 
     def build_model_kwargs(self, *, obs_dim: int, critic_obs_dim: int) -> dict[str, Any]:
         """Build learner model kwargs from the environment observation contract."""
         del obs_dim, critic_obs_dim
         return dict(self.actor_kwargs)
+
+
+def resolve_actor_adapter_modules(
+    rl_cfg: dict[str, Any],
+    runtime: OffPolicyRuntime | None,
+) -> tuple[str, ...]:
+    """Resolve dotted actor-adapter registration modules from owner config.
+
+    Combines the plain ``algo.actor_adapter_modules`` config key (usable
+    without a custom runtime resolver) with the runtime-provided modules,
+    deduplicated in declaration order.
+    """
+    raw = rl_cfg.get("actor_adapter_modules") or ()
+    if isinstance(raw, str):
+        raw = (raw,)
+    modules: list[str] = []
+    for entry in list(raw) + list(runtime.actor_adapter_modules if runtime else ()):
+        if not isinstance(entry, str) or not entry:
+            raise ValueError(
+                "actor_adapter_modules entries must be non-empty dotted module "
+                f"strings, got {entry!r}."
+            )
+        if entry not in modules:
+            modules.append(entry)
+    return tuple(modules)
 
 
 def _resolve_callable(path: str) -> Any:

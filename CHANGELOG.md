@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Generic off-policy actor adapter registry
+  (`uni_rl.offpolicy.actor_adapter.OffPolicyActorAdapter`,
+  `register_offpolicy_actor_adapter`, `get_offpolicy_actor_adapter`) so external
+  packages can plug custom actor construction, exploration sampling, privileged
+  context extraction, and inference-context slicing into the generic off-policy
+  runtime. Spawn-safety is provided by the new optional
+  `algo.actor_adapter_modules` config key (also on `OffPolicyRuntime`), whose
+  dotted modules are imported in both the learner process and the spawn
+  collector subprocess.
+
+### Removed
+
+- The HORA implementation (`uni_rl.algos.hora`) and its hardcoded `hora_sac`
+  branches in the generic off-policy runtime moved to the standalone
+  `sharpa_rl_unilab` repository. The old import namespace is removed without a
+  forwarding shim; consumers register an `OffPolicyActorAdapter` instead.
+
 ## [1.1.1] - 2026-09-08
 
 ### Added
