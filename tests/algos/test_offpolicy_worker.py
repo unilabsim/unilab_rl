@@ -47,6 +47,7 @@ def test_collector_binds_backend_device_before_env_materialization(
             inference_request_queue=None,
             inference_response_queue=None,
             algo_type="sac",
+            actor_adapter_modules=None,
             metrics_queue=None,
             sim_backend="mjwarp",
             backend_device="cuda:3",
@@ -167,7 +168,7 @@ def test_sample_offpolicy_actions_rejects_unknown_algo() -> None:
         )
 
 
-class _DummyHoraActor:
+class _DummyPrivInfoActor:
     def __init__(self) -> None:
         self.calls: list[tuple[torch.Tensor, torch.Tensor, bool]] = []
 
@@ -181,14 +182,40 @@ class _DummyHoraActor:
         return torch.ones(obs.shape[0], 3, dtype=obs.dtype)
 
 
-def test_sample_offpolicy_actions_passes_hora_priv_info() -> None:
-    actor = _DummyHoraActor()
+def _register_dummy_priv_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    import numpy as np
+
+    from uni_rl.offpolicy import actor_adapter as actor_adapter_module
+
+    def resolve_priv_info(obs_np, critic_np, info):
+        if info is not None and info.get("critic_info") is not None:
+            return np.asarray(info["critic_info"], dtype=np.float32)
+        return np.asarray(critic_np[:, obs_np.shape[1] :], dtype=np.float32)
+
+    monkeypatch.setitem(
+        actor_adapter_module._ADAPTERS,
+        "dummy_priv_sac",
+        actor_adapter_module.OffPolicyActorAdapter(
+            algo_type="dummy_priv_sac",
+            sample_actions=lambda actor, obs, dones, priv: actor.explore(
+                obs, priv, deterministic=False
+            ),
+            resolve_priv_info=resolve_priv_info,
+        ),
+    )
+
+
+def test_sample_offpolicy_actions_uses_adapter_sample_actions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _register_dummy_priv_adapter(monkeypatch)
+    actor = _DummyPrivInfoActor()
     obs = torch.zeros(4, 5)
     priv_info = torch.randn(4, 2)
 
     actions = sample_offpolicy_actions(
         actor=actor,
-        algo_type="hora_sac",
+        algo_type="dummy_priv_sac",
         obs_torch=obs,
         prev_dones_torch=torch.zeros(4),
         priv_info_torch=priv_info,
@@ -199,16 +226,19 @@ def test_sample_offpolicy_actions_passes_hora_priv_info() -> None:
     torch.testing.assert_close(actor.calls[0][1], priv_info)
 
 
-def test_resolve_offpolicy_actor_priv_info_prefers_explicit_info() -> None:
+def test_resolve_offpolicy_actor_priv_info_prefers_explicit_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import numpy as np
 
+    _register_dummy_priv_adapter(monkeypatch)
     obs = np.zeros((2, 3), dtype=np.float32)
     critic_tail = np.ones((2, 2), dtype=np.float32)
     critic = np.concatenate([obs, critic_tail], axis=1)
     explicit = np.full((2, 2), 7.0, dtype=np.float32)
 
     resolved = resolve_offpolicy_actor_priv_info(
-        algo_type="hora_sac",
+        algo_type="dummy_priv_sac",
         obs_np=obs,
         critic_np=critic,
         info={"critic_info": explicit},
@@ -217,18 +247,34 @@ def test_resolve_offpolicy_actor_priv_info_prefers_explicit_info() -> None:
     np.testing.assert_allclose(resolved, explicit)
 
 
-def test_resolve_offpolicy_actor_priv_info_uses_critic_tail() -> None:
+def test_resolve_offpolicy_actor_priv_info_uses_critic_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import numpy as np
 
+    _register_dummy_priv_adapter(monkeypatch)
     obs = np.zeros((2, 3), dtype=np.float32)
     critic_tail = np.arange(4, dtype=np.float32).reshape(2, 2)
     critic = np.concatenate([obs, critic_tail], axis=1)
 
     resolved = resolve_offpolicy_actor_priv_info(
-        algo_type="hora_sac",
+        algo_type="dummy_priv_sac",
         obs_np=obs,
         critic_np=critic,
         info={},
     )
 
     np.testing.assert_allclose(resolved, critic_tail)
+
+
+def test_resolve_offpolicy_actor_priv_info_returns_none_without_adapter() -> None:
+    import numpy as np
+
+    resolved = resolve_offpolicy_actor_priv_info(
+        algo_type="sac",
+        obs_np=np.zeros((2, 3), dtype=np.float32),
+        critic_np=np.zeros((2, 5), dtype=np.float32),
+        info=None,
+    )
+
+    assert resolved is None

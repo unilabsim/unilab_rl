@@ -2,7 +2,7 @@
 
 **Always use `uv run`, not python**.
 
-uni_rl（distribution 名 `unilab-rl`）是从 UniLab 拆出的 **RL 算法与异步 runtime** 独立包：PPO/APPO/SAC/TD3/FlashSAC/HORA 的 runner、learner、collector、IPC 与训练日志。
+uni_rl（distribution 名 `unilab-rl`）是从 UniLab 拆出的 **RL 算法与异步 runtime** 独立包：PPO/APPO/SAC/TD3/FlashSAC 的 runner、learner、collector、IPC 与训练日志。
 
 ## Core Principles
 
@@ -14,9 +14,9 @@ uni_rl（distribution 名 `unilab-rl`）是从 UniLab 拆出的 **RL 算法与�
 
 ## Layout
 
-- `src/uni_rl/algos/` — `appo`（异步 PPO）、`fast_sac` / `fast_td3` / `flash_sac`（off-policy learner + double-buffer builder）、`hora`（teacher / distillation 套件）、`rsl_rl.py` / `rsl_rl_ppo.py` / `rsl_rl_runtime.py`（rsl_rl 封装）、`common`（共享网络 / normalization / compile 辅助）
+- `src/uni_rl/algos/` — `appo`（异步 PPO）、`fast_sac` / `fast_td3` / `flash_sac`（off-policy learner + double-buffer builder）、`rsl_rl.py` / `rsl_rl_ppo.py` / `rsl_rl_runtime.py`（rsl_rl 封装）、`common`（共享网络 / normalization / compile 辅助）
 - `src/uni_rl/ipc/` — async runner、shm rollout/replay buffer、replay pipeline、DP gradient sync、memory budget
-- `src/uni_rl/offpolicy/` — 通用 off-policy double-buffer runner 脚手架
+- `src/uni_rl/offpolicy/` — 通用 off-policy double-buffer runner 脚手架；`actor_adapter.py` 是自定义 off-policy actor 的扩展 registry
 - `src/uni_rl/logging/` — tensorboard / wandb logger、trace recorder
 - `src/uni_rl/utils/` — device / seed / nan_guard / observations / final_observation
 - `src/uni_rl/env_contract.py` — 注入式 env contract
@@ -54,6 +54,7 @@ PR 合入 `main` 前必须 CI 全绿（ruff lint / ruff format / mypy / pyright 
 
 两点说明：
 
+- 自定义 off-policy actor 类型（如 privileged teacher actor）不再改 uni_rl 通用代码：在外部包 import 时 `register_offpolicy_actor_adapter(OffPolicyActorAdapter(...))`（`uni_rl.offpolicy.actor_adapter`），并在 owner YAML 配 `algo.actor_adapter_modules: [my_repo.adapters]`（dotted module 列表）——learner 进程与 spawn collector 子进程都会 import 这些模块以触发注册。
 - 论文级创新通常只动 **learner 内部**（loss / 网络结构 / buffer 采样 / 探索策略），不需要碰 `ipc/` 与 collector 协议；先确认目标能否落在 learner 层再选档。
 - env 侧元数据需求（action bounds、joint names、对称性映射等）走 `uni_rl.env_contract` 的 capabilities 扩展点（`get_algo_capabilities`，冷路径专用），**不要**在算法代码里 `getattr` / `hasattr` 窥探 env 私有属性。
 

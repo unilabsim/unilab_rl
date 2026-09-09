@@ -10,6 +10,7 @@ import torch
 
 from uni_rl.algos.common.collector_timing import extract_env_step_breakdown_timing_ms
 from uni_rl.env_contract import EnvFactory
+from uni_rl.offpolicy.actor_adapter import get_offpolicy_actor_adapter, import_actor_adapter_modules
 from uni_rl.offpolicy.thread_budget import apply_torch_thread_runtime
 from uni_rl.utils.device import configure_backend_process_device
 from uni_rl.utils.final_observation import resolve_terminal_observation_contract
@@ -44,14 +45,20 @@ def sample_offpolicy_actions(
             torch.Tensor,
             actor.explore(obs_torch, dones=prev_dones_torch, deterministic=False),
         )
-    if algo_type == "hora_sac":
-        if priv_info_torch is None:
-            raise ValueError("HORA-SAC action sampling requires priv_info_torch.")
-        return cast(
-            torch.Tensor,
-            actor.explore(obs_torch, priv_info_torch, deterministic=False),
-        )
-    raise ValueError(f"Unsupported off-policy algo_type for learner action sampling: {algo_type}")
+    adapter = get_offpolicy_actor_adapter(algo_type)
+    if adapter is not None:
+        if adapter.sample_actions is None:
+            raise ValueError(
+                f"OffPolicyActorAdapter for algo_type={algo_type!r} does not provide "
+                "sample_actions."
+            )
+        return adapter.sample_actions(actor, obs_torch, prev_dones_torch, priv_info_torch)
+    raise ValueError(
+        f"Unsupported off-policy algo_type for learner action sampling: {algo_type}. "
+        "Custom actor types must register an OffPolicyActorAdapter via "
+        "register_offpolicy_actor_adapter() or list their registration module in "
+        "actor_adapter_modules."
+    )
 
 
 def resolve_offpolicy_actor_priv_info(
@@ -62,21 +69,10 @@ def resolve_offpolicy_actor_priv_info(
     info: dict | None,
 ) -> np.ndarray | None:
     """Resolve optional actor context for privileged off-policy actors."""
-    if algo_type != "hora_sac":
+    adapter = get_offpolicy_actor_adapter(algo_type)
+    if adapter is None or adapter.resolve_priv_info is None:
         return None
-
-    from uni_rl.algos.hora.observations import split_hora_obs_with_priv_info
-
-    _, _, priv_info_np = split_hora_obs_with_priv_info(
-        {"obs": obs_np, "critic": critic_np},
-        info,
-    )
-    if priv_info_np is None:
-        raise ValueError(
-            "HORA-SAC requires privileged info from info['critic_info'] "
-            "or the critic observation tail."
-        )
-    return np.asarray(priv_info_np, dtype=np.float32)
+    return adapter.resolve_priv_info(obs_np, critic_np, info)
 
 
 def _record_timing_ms(timing_accum_ms, timing_counts, key: str, value: float) -> None:
@@ -155,6 +151,7 @@ def off_policy_collector_fn(
     inference_request_queue,
     inference_response_queue,
     algo_type: str = "sac",
+    actor_adapter_modules: list[str] | tuple[str, ...] | None = None,
     metrics_queue=None,
     sim_backend: str = "mujoco",
     backend_device: str | None = None,
@@ -180,6 +177,7 @@ def off_policy_collector_fn(
         inference_request_queue=inference_request_queue,
         inference_response_queue=inference_response_queue,
         algo_type=algo_type,
+        actor_adapter_modules=actor_adapter_modules,
         metrics_queue=metrics_queue,
         sim_backend=sim_backend,
         backend_device=backend_device,
@@ -202,6 +200,7 @@ def _run_collector(
     inference_request_queue,
     inference_response_queue,
     algo_type,
+    actor_adapter_modules,
     metrics_queue,
     sim_backend,
     backend_device,
@@ -213,6 +212,9 @@ def _run_collector(
     torch_thread_runtime=None,
     backend_device_binder=None,
 ):
+    # Spawn subprocesses do not inherit the parent's adapter registrations;
+    # import the configured modules so registration side effects run here too.
+    import_actor_adapter_modules(actor_adapter_modules)
     apply_torch_thread_runtime(torch_thread_runtime, role="collector", torch_module=torch)
     configured_backend_device = configure_backend_process_device(
         sim_backend, backend_device, bind_device=backend_device_binder

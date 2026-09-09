@@ -9,8 +9,9 @@ from omegaconf import DictConfig, OmegaConf
 
 from uni_rl.algos.fast_sac.learner import FastSACLearner
 from uni_rl.env_contract import EnvFactory
+from uni_rl.offpolicy.actor_adapter import import_actor_adapter_modules
 from uni_rl.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
-from uni_rl.offpolicy.runtime import resolve_custom_offpolicy_runtime
+from uni_rl.offpolicy.runtime import resolve_actor_adapter_modules, resolve_custom_offpolicy_runtime
 from uni_rl.utils.nan_guard import NanGuardCfg
 from uni_rl.utils.observations import get_obs_dims
 
@@ -34,6 +35,11 @@ def build_sac_double_buffer_runner(
     """Build SAC from its Hydra owner config without interpreting it in the entrypoint."""
     rl_cfg = cast(dict[str, Any], OmegaConf.to_container(cfg.algo, resolve=True))
     custom_runtime = resolve_custom_offpolicy_runtime(rl_cfg)
+    # Import registration modules before the learner builds its actor so
+    # custom adapter registrations are live in this process; the runner
+    # forwards the list to the spawn collector.
+    actor_adapter_modules = resolve_actor_adapter_modules(rl_cfg, custom_runtime)
+    import_actor_adapter_modules(actor_adapter_modules)
 
     env = env_factory(1, env_cfg_override)
     try:
@@ -125,4 +131,5 @@ def build_sac_double_buffer_runner(
         dp_sync=dp_sync,
         backend_device_binder=backend_device_binder,
         inference_request_timeout_sec=getattr(cfg.training, "inference_request_timeout_sec", None),
+        actor_adapter_modules=actor_adapter_modules,
     )

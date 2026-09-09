@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import sys
 from collections import deque
+from collections.abc import Iterable
 from typing import Any
 
 from uni_rl.algos.common.device import get_env_dims
 from uni_rl.env_contract import EnvFactory
 from uni_rl.ipc.async_runner import AsyncRunner
 from uni_rl.logging import OffPolicyLogger
+from uni_rl.offpolicy.actor_adapter import import_actor_adapter_modules
 from uni_rl.utils.device import get_default_device
 from uni_rl.utils.nan_guard import NanGuardCfg
 from uni_rl.utils.seed import apply_training_seed
@@ -132,6 +134,7 @@ class OffPolicyRunner(AsyncRunner):
         trace_cuda_events: bool = True,
         nan_guard_cfg: NanGuardCfg | None = None,
         torch_thread_runtime: dict[str, Any] | None = None,
+        actor_adapter_modules: Iterable[str] | None = None,
     ):
         if int(env_steps_per_sync) < 1:
             raise ValueError("Off-policy env_steps_per_sync must be >= 1")
@@ -169,6 +172,11 @@ class OffPolicyRunner(AsyncRunner):
         self.trace_cuda_events = trace_cuda_events
         self.nan_guard_cfg = nan_guard_cfg
         self.torch_thread_runtime = torch_thread_runtime
+        # Dotted modules whose import registers custom off-policy actor
+        # adapters. Imported here (learner process) and forwarded to the
+        # spawn collector, which re-imports them at startup.
+        self.actor_adapter_modules = tuple(str(m) for m in (actor_adapter_modules or ()))
+        import_actor_adapter_modules(self.actor_adapter_modules)
 
         apply_training_seed(self.seed, torch_runtime=True, cuda=True)
         self.obs_dim, self.action_dim, self.critic_obs_dim = get_env_dims(
