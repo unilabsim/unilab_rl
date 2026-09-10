@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-10
+
+### Changed
+
+- No code changes since 1.1.3. This minor bump re-anchors the public-contract
+  changes shipped in 1.1.3 (the new off-policy actor adapter API and the
+  removal of the `uni_rl.algos.hora` namespace) under a minor version, per the
+  semver discipline that public-contract changes require at least a minor
+  bump. Consumers pinning `~=1.1` should review the 1.1.3 changelog entries
+  before upgrading.
+
 ## [1.1.3] - 2026-09-09
 
 ### Added
