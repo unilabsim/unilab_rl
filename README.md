@@ -94,6 +94,31 @@ contract, and the *new algorithm recipe* section in
 [`AGENTS.md`](AGENTS.md) for how to plug in a custom algorithm via
 `runtime_resolver` without forking.
 
+## External multi-node data parallelism
+
+`uni_rl.ipc.dp_launcher` also supports ranks that live on different hosts.
+An external orchestrator starts each rank itself and injects the topology
+through environment variables:
+
+```bash
+UNILAB_DP_EXTERNAL=1        # enable external topology parsing
+UNILAB_DP_WORLD_SIZE=2      # global rank count
+UNILAB_DP_RANK=1            # this process's global rank
+UNILAB_DP_RENDEZVOUS_URL=tcp://192.168.100.1:29501  # TCPStore rendezvous
+UNILAB_DP_LOG_DIR=logs/run  # canonical run directory (rank 0 writes)
+```
+
+`DpParameterSync` then joins a TCP rendezvous instead of the default local
+FileStore, every rank keeps its full host CPU budget (no affinity
+partitioning), and device indices stay host-local. Each rank runs a complete
+collector + replay + learner pipeline; gradients are all-reduced after every
+backward pass, keeping all ranks bitwise-identical from the rank-0
+initialization broadcast onward.
+
+The contract is validated end to end by two-node training in UniLab; a
+single-host loopback variant (gloo backend) is covered by
+`tests/ipc/test_dp_multinode.py`.
+
 ## Design contract
 
 `uni_rl` does **not** depend on any simulator or environment library.
