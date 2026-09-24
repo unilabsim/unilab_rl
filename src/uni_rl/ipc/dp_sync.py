@@ -38,7 +38,8 @@ class DpParameterSync:
         *,
         world_size: int,
         rank: int,
-        rendezvous_path: str,
+        rendezvous_path: str | None = None,
+        rendezvous_url: str | None = None,
         backend: str = "nccl",
         device: str | None = None,
         timeout_s: int = 120,
@@ -49,7 +50,18 @@ class DpParameterSync:
             raise ValueError(f"rank {rank} is out of range for world_size={world_size}")
         self.world_size = int(world_size)
         self.rank = int(rank)
-        self.rendezvous_path = str(rendezvous_path)
+        self.rendezvous_path = str(rendezvous_path) if rendezvous_path is not None else None
+        self.rendezvous_url = str(rendezvous_url) if rendezvous_url is not None else None
+        if (self.rendezvous_path is None) == (self.rendezvous_url is None):
+            raise ValueError(
+                "provide exactly one of rendezvous_path (single-node FileStore) or "
+                "rendezvous_url (multi-node TCPStore, e.g. 'tcp://host:port')"
+            )
+        if self.rendezvous_url is not None and not self.rendezvous_url.startswith("tcp://"):
+            raise ValueError(
+                f"rendezvous_url must use the tcp:// scheme for cross-node rendezvous, "
+                f"got {self.rendezvous_url!r}"
+            )
         self.backend = str(backend)
         self.device = None if device is None else torch.device(device)
         self.timeout_s = int(timeout_s)
@@ -62,11 +74,15 @@ class DpParameterSync:
         self._started = False
 
     def start(self) -> None:
-        """Init the process group over a shared-file rendezvous.
+        """Init the process group over a file or TCP rendezvous.
 
-        The rendezvous path must be unique per run (the caller derives it
-        from the per-run log directory), so no stale FileStore state from a
-        previous run can leak in and no pre-clean is needed.
+        Single-node runs pass ``rendezvous_path``: it must be unique per run
+        (the caller derives it from the per-run log directory), so no stale
+        FileStore state from a previous run can leak in and no pre-clean is
+        needed. Multi-node runs pass ``rendezvous_url`` (``tcp://host:port``);
+        rank 0 hosts the TCPStore on a reachable address and every other node
+        connects to it, which keeps the package free of shared-filesystem
+        requirements.
 
         For NCCL the current CUDA device is pinned to this rank's device
         first: ProcessGroupNCCL binds communicators to the current device,
@@ -87,10 +103,19 @@ class DpParameterSync:
             os.environ.setdefault("NCCL_P2P_DISABLE", "1")
             os.environ.setdefault("NCCL_SHM_DISABLE", "1")
         if self.backend == "nccl" and self.device is not None and self.device.type == "cuda":
+            if self.device.index is None:
+                # An unindexed "cuda" device cannot be bound by
+                # torch.cuda.set_device; resolve to this process's current GPU.
+                self.device = torch.device(f"cuda:{torch.cuda.current_device()}")
             torch.cuda.set_device(self.device)
+        init_method = (
+            self.rendezvous_url
+            if self.rendezvous_url is not None
+            else f"file://{self.rendezvous_path}"
+        )
         dist.init_process_group(
             backend=self.backend,
-            init_method=f"file://{self.rendezvous_path}",
+            init_method=init_method,
             rank=self.rank,
             world_size=self.world_size,
             timeout=datetime.timedelta(seconds=self.timeout_s),

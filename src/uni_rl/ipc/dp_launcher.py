@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
@@ -22,6 +23,8 @@ UNILAB_DP_RANK = "UNILAB_DP_RANK"
 UNILAB_DP_WORLD_SIZE = "UNILAB_DP_WORLD_SIZE"
 UNILAB_DP_DEVICES = "UNILAB_DP_DEVICES"
 UNILAB_DP_LOG_DIR = "UNILAB_DP_LOG_DIR"
+UNILAB_DP_EXTERNAL = "UNILAB_DP_EXTERNAL"
+UNILAB_DP_RENDEZVOUS_URL = "UNILAB_DP_RENDEZVOUS_URL"
 
 _WATCHDOG_INTERVAL_S = 0.5
 _COOPERATIVE_EXIT_GRACE_S = 10.0
@@ -67,6 +70,55 @@ def current_dp_world_size() -> int:
     return int(os.environ.get(UNILAB_DP_WORLD_SIZE, "1"))
 
 
+@dataclass(frozen=True)
+class ExternalDpTopology:
+    """Data-parallel topology launched by a downstream multi-node orchestrator.
+
+    ``DpRankSupervisor`` covers ranks that share one host. When ranks live on
+    different machines (for example one Spark per rank), the downstream
+    consumer's launcher starts each rank itself and injects this topology:
+    every rank then owns a full host CPU budget, maps to its own host-local
+    CUDA device, and joins a TCP rendezvous instead of a shared file.
+    """
+
+    world_size: int
+    rank: int
+    rendezvous_url: str
+
+
+def current_external_dp_topology() -> ExternalDpTopology | None:
+    """Read an externally launched multi-node data-parallel topology.
+
+    Returns ``None`` for the regular single-process and local
+    ``DpRankSupervisor`` paths. External mode is requested with
+    ``UNILAB_DP_EXTERNAL=1`` plus ``UNILAB_DP_WORLD_SIZE`` /
+    ``UNILAB_DP_RANK`` and a ``tcp://host:port`` rendezvous URL.
+    """
+    if os.environ.get(UNILAB_DP_EXTERNAL, "0") != "1":
+        return None
+    world_size = int(os.environ.get(UNILAB_DP_WORLD_SIZE, "1"))
+    rank = int(os.environ.get(UNILAB_DP_RANK, "0"))
+    if world_size < 2:
+        raise ValueError(
+            f"{UNILAB_DP_EXTERNAL}=1 requires {UNILAB_DP_WORLD_SIZE} >= 2, got {world_size}"
+        )
+    if not 0 <= rank < world_size:
+        raise ValueError(
+            f"{UNILAB_DP_RANK}={rank} is out of range for {UNILAB_DP_WORLD_SIZE}={world_size}"
+        )
+    rendezvous_url = os.environ.get(UNILAB_DP_RENDEZVOUS_URL)
+    if not rendezvous_url:
+        raise ValueError(
+            f"{UNILAB_DP_EXTERNAL}=1 requires {UNILAB_DP_RENDEZVOUS_URL} "
+            "(e.g. tcp://192.168.100.1:29501)"
+        )
+    if not rendezvous_url.startswith("tcp://"):
+        raise ValueError(
+            f"{UNILAB_DP_RENDEZVOUS_URL} must use the tcp:// scheme, got {rendezvous_url!r}"
+        )
+    return ExternalDpTopology(world_size=world_size, rank=rank, rendezvous_url=rendezvous_url)
+
+
 def current_torch_distributed_rank() -> int:
     """Global torch-distributed rank of this process (0 outside torchrun)."""
     return int(os.environ.get("RANK", "0"))
@@ -108,11 +160,15 @@ def resolve_collector_cpu_ids(
     rank: int,
     cpu_count: int | None = None,
     explicit: Any = None,
+    colocated: bool = True,
 ) -> list[int] | None:
     """Resolve the CPU ids exclusively owned by this rank's collector.
 
     Returns None for the single-rank default (``world_size <= 1``) so the
     single-card path stays bit-identical to the pre-partition behavior.
+    Set ``colocated=False`` when the ranks live on different hosts (external
+    multi-node launch): each rank then owns a full machine, so no local CPU
+    partitioning is applied and the caller keeps its complete affinity.
     With ``cpu_count=None`` (the normal upper-layer path), it discovers the
     current affinity and assigns complete physical-core groups, including SMT
     siblings, to each rank. ``cpu_count`` retains the deterministic logical
@@ -130,6 +186,8 @@ def resolve_collector_cpu_ids(
     rank = int(rank)
     if rank < 0 or rank >= world_size:
         raise ValueError(f"data-parallel rank {rank} is out of range for world_size={world_size}")
+    if not colocated:
+        return None
     groups: list[list[int]] | None = None
     if cpu_count is None:
         try:
@@ -321,21 +379,32 @@ def resolve_dp_rank_device(devices: tuple[int, ...] | None, rank: int) -> str | 
     return f"cuda:{devices[rank]}"
 
 
-def apply_dp_rank_config(cfg: Any, devices: tuple[int, ...] | None, rank: int) -> str | None:
+def apply_dp_rank_config(
+    cfg: Any,
+    devices: tuple[int, ...] | None,
+    rank: int,
+    *,
+    device_rank: int | None = None,
+) -> str | None:
     """Apply the per-rank seed and return this rank's explicit CUDA device.
 
     Rank 0 keeps the configured seed; rank i>0 trains with ``seed + i`` until
     init broadcast lands in a later stage. ``training.devices`` is the sole
     public off-policy device field, so the resolved runtime device is returned
     instead of being written back into a synthetic ``training.device`` key.
+    ``devices`` indexes the *local* device list: an externally launched
+    multi-node rank passes its host-local list (typically one entry) and still
+    receives its global-rank seed offset.
+    ``device_rank`` selects the entry inside that local list and defaults to
+    the global rank (the single-node supervisor layout).
     """
-    if devices is None:
-        return None
-    device = resolve_dp_rank_device(devices, rank)
     from omegaconf import open_dict
 
     with open_dict(cfg):
-        cfg.algo.seed = int(cfg.algo.seed) + rank
+        cfg.algo.seed = int(cfg.algo.seed) + int(rank)
+    if devices is None:
+        return None
+    device = resolve_dp_rank_device(devices, rank if device_rank is None else device_rank)
     return device
 
 
