@@ -23,7 +23,9 @@ import torch.optim as optim
 from uni_rl.algos.common.compile import get_torch_compile_for_cuda
 from uni_rl.algos.common.learner_boilerplate import (
     LearnerBoilerplateMixin,
+    fused_adam_supported,
     polyak_update_target,
+    resolve_finite_check_flags,
 )
 from uni_rl.algos.common.normalization import EmpiricalNormalization
 
@@ -273,25 +275,19 @@ class DistributionalQNetwork(nn.Module):
 
         target_z = rewards.unsqueeze(1) + bootstrap.unsqueeze(1) * discount.unsqueeze(1) * q_support
         target_z = target_z.clamp(self.v_min, self.v_max)
+        # target_z is clamped to [v_min, v_max], so b stays within
+        # [0, num_atoms - 1].  Splitting the mass between floor(b) and
+        # floor(b)+1 (clamped to the support) reproduces the integer-b edge
+        # cases without the eq/logical_and/where mask chain.
         b = (target_z - self.v_min) / delta_z
         lower = torch.floor(b).long()
-        upper = torch.ceil(b).long()
-
-        is_integer = upper == lower
-        lower_mask = torch.logical_and((lower > 0), is_integer)
-        upper_mask = torch.logical_and((lower == 0), is_integer)
-
-        lower = torch.where(lower_mask, lower - 1, lower)
-        upper = torch.where(upper_mask, upper + 1, upper)
+        upper = (lower + 1).clamp(max=self.num_atoms - 1)
+        upper_weight = b - lower.float()
+        lower_weight = 1.0 - upper_weight
 
         next_dist = F.softmax(self(obs, actions), dim=1)
         proj_dist = torch.zeros_like(next_dist)
-        offset = (
-            torch.linspace(0, (batch_size - 1) * self.num_atoms, batch_size, device=device)
-            .unsqueeze(1)
-            .expand(batch_size, self.num_atoms)
-            .long()
-        )
+        offset = self._projection_offset(batch_size, device)
 
         lower_indices = (lower + offset).view(-1)
         upper_indices = (upper + offset).view(-1)
@@ -299,9 +295,26 @@ class DistributionalQNetwork(nn.Module):
         lower_indices = torch.clamp(lower_indices, 0, max_index)
         upper_indices = torch.clamp(upper_indices, 0, max_index)
 
-        proj_dist.view(-1).index_add_(0, lower_indices, (next_dist * (upper.float() - b)).view(-1))
-        proj_dist.view(-1).index_add_(0, upper_indices, (next_dist * (b - lower.float())).view(-1))
+        proj_dist.view(-1).index_add_(0, lower_indices, (next_dist * lower_weight).view(-1))
+        proj_dist.view(-1).index_add_(0, upper_indices, (next_dist * upper_weight).view(-1))
         return proj_dist
+
+    def _projection_offset(self, batch_size: int, device: torch.device) -> torch.Tensor:
+        """Cached row-offset grid for the flattened index_add_ scatter."""
+        cache = getattr(self, "_proj_offset_cache", None)
+        if cache is None:
+            cache = {}
+            self._proj_offset_cache = cache
+        offset = cache.get(batch_size)
+        if offset is None or offset.device != device:
+            offset = (
+                torch.linspace(0, (batch_size - 1) * self.num_atoms, batch_size, device=device)
+                .unsqueeze(1)
+                .expand(batch_size, self.num_atoms)
+                .long()
+            )
+            cache[batch_size] = offset
+        return offset
 
 
 class SACCritic(nn.Module):
@@ -449,9 +462,16 @@ class FastSACLearner(LearnerBoilerplateMixin):
         # Manual CUDA Graph replay cannot branch on host-visible finite checks.
         # The compiled CUDA Graph hot path follows the same capture-safe
         # semantics and relies on the existing NaN guard/metrics boundary.
-        self._host_finite_checks = not (
-            self._device_type == "cuda"
-            and (self.use_compile or use_cuda_graph_critic or use_cuda_graph_actor)
+        # MPS has no device-side skip mechanism (its fused AdamW kernel
+        # ignores `found_inf`), so host checks there run only on the
+        # metrics-reading update of each iteration — see
+        # `resolve_finite_check_flags`.  CUDA/CPU behavior is unchanged.
+        self._host_finite_checks, self._metrics_finite_checks = resolve_finite_check_flags(
+            self._device_type,
+            device_gated=(
+                self._device_type == "cuda"
+                and (self.use_compile or use_cuda_graph_critic or use_cuda_graph_actor)
+            ),
         )
         self.use_cuda_graph_critic = bool(use_cuda_graph_critic) and self._device_type == "cuda"
         requested_cuda_graph_critic_packed_staging = bool(use_cuda_graph_critic_packed_staging)
@@ -517,9 +537,15 @@ class FastSACLearner(LearnerBoilerplateMixin):
         else:
             self.obs_normalizer = nn.Identity()
 
-        # fused AdamW requires CUDA; MPS and CPU do not support it
-        _fused = self._device_type == "cuda"
-        _optimizer_cuda_kwargs = {"capturable": True} if _fused else {}
+        # Fused AdamW collapses the per-parameter host loop into one kernel.
+        # Besides CUDA, torch >= 2.6 ships an MPS fused kernel; on MPS the
+        # single-tensor fallback additionally performs a blocking `.item()`
+        # per parameter per step, which dominates learner time there.
+        # `capturable` stays CUDA-only (rejected by torch on other devices).
+        _fused = fused_adam_supported(self._device_type)
+        _optimizer_cuda_kwargs = (
+            {"capturable": True} if _fused and self._device_type == "cuda" else {}
+        )
 
         # Optimizers (AdamW with holosoma betas)
         self.q_optimizer = optim.AdamW(
@@ -1432,7 +1458,7 @@ class FastSACLearner(LearnerBoilerplateMixin):
             )
 
         # Skip if NaN
-        if not self._host_finite_checks or torch.isfinite(qf_loss):
+        if self._finite_check_ok(qf_loss, read_metrics):
             self.q_optimizer.zero_grad(set_to_none=True)
             if self.scaler:
                 with _cuda_nvtx_range("critic/backward", self.nvtx_profile_ranges):
@@ -1473,7 +1499,7 @@ class FastSACLearner(LearnerBoilerplateMixin):
                 self.alpha_optimizer.zero_grad(set_to_none=True)
                 with _cuda_nvtx_range("critic/alpha_loss", self.nvtx_profile_ranges):
                     alpha_loss = self._alpha_loss_tensor(next_log_probs)
-                if not self._host_finite_checks or torch.isfinite(alpha_loss):
+                if self._finite_check_ok(alpha_loss, read_metrics):
                     with _cuda_nvtx_range("critic/alpha_backward", self.nvtx_profile_ranges):
                         alpha_loss.backward()
                     self._sync_gradients((self.log_alpha,))
@@ -1519,7 +1545,7 @@ class FastSACLearner(LearnerBoilerplateMixin):
                 actor_loss, policy_entropy, action_std = self._actor_loss_tensors(obs, critic_obs)
 
         # Skip if NaN
-        if not self._host_finite_checks or torch.isfinite(actor_loss):
+        if self._finite_check_ok(actor_loss, read_metrics):
             self.actor_optimizer.zero_grad(set_to_none=True)
             if self.scaler:
                 with _cuda_nvtx_range("actor/backward", self.nvtx_profile_ranges):
