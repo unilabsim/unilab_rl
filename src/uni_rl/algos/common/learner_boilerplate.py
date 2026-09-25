@@ -3,9 +3,8 @@
 ``LearnerBoilerplateMixin`` centralizes the pieces of ``FastSACLearner`` and
 ``FlashSACLearner`` that are identical between the two: AMP dtype/scaler
 resolution, autocast context, observation-normalizer updates, gradient-sync
-plumbing, CUDA graph release, and loss-method compilation. The mixin only
-declares the attribute contract; consuming learners own the attributes and
-the algorithm-specific CUDA graph lifecycle (capture/reset/materialize).
+plumbing, and loss-method compilation. The mixin only declares the attribute
+contract; consuming learners own the attributes.
 """
 
 from __future__ import annotations
@@ -57,9 +56,9 @@ def fused_adam_supported(device_type: str) -> bool:
 def resolve_finite_check_flags(device_type: str, device_gated: bool) -> tuple[bool, bool]:
     """Return ``(host_finite_checks, metrics_finite_checks)`` for a learner.
 
-    ``device_gated`` marks the CUDA compile/graph paths whose fused kernels
-    skip non-finite steps on-device.  MPS has no equivalent (its fused AdamW
-    kernel ignores ``found_inf``), so host checks there are deferred to the
+    ``device_gated`` marks the CUDA compiled path whose fused kernels skip
+    non-finite steps on-device.  MPS has no equivalent (its fused AdamW kernel
+    ignores ``found_inf``), so host checks there are deferred to the
     metrics-reading update of each iteration — every check is a blocking MPS
     sync, and a non-finite loss is detected at that same sync boundary.
     """
@@ -78,12 +77,7 @@ class LearnerBoilerplateMixin:
     _amp_dtype: torch.dtype
     scaler: Any | None
     obs_normalizer: EmpiricalNormalization | nn.Identity
-    use_cuda_graph_critic: bool
-    use_cuda_graph_actor: bool
-    dp_cuda_graph_gradient_sync: bool
     _gradient_sync: Callable[[Iterable[torch.Tensor]], None] | None
-    _gradient_sync_graph_replay_recorder: Callable[[int], None] | None
-    _active_cuda_graph_gradient_sync_calls: list[int] | None
     _critic_loss_tensors: Callable[..., Any]
     _actor_loss_tensors: Callable[..., Any]
     _compile_loss_cudagraphs: bool = False
@@ -102,12 +96,6 @@ class LearnerBoilerplateMixin:
         if self._metrics_finite_checks and not read_metrics:
             return True
         return bool(torch.isfinite(loss))
-
-    def _reset_critic_cuda_graph(self) -> None:
-        raise NotImplementedError
-
-    def _reset_actor_cuda_graph(self) -> None:
-        raise NotImplementedError
 
     @staticmethod
     def _resolve_amp_dtype(amp_dtype: str, device_type: str) -> torch.dtype:
@@ -148,45 +136,13 @@ class LearnerBoilerplateMixin:
             return
 
         compile_kwargs = {"options": {"triton.cudagraphs": bool(self._compile_loss_cudagraphs)}}
-        if not self.use_cuda_graph_critic:
-            self._critic_loss_tensors = compile_fn(self._critic_loss_tensors, **compile_kwargs)
-        if not self.use_cuda_graph_actor:
-            self._actor_loss_tensors = compile_fn(self._actor_loss_tensors, **compile_kwargs)
+        self._critic_loss_tensors = compile_fn(self._critic_loss_tensors, **compile_kwargs)
+        self._actor_loss_tensors = compile_fn(self._actor_loss_tensors, **compile_kwargs)
 
-    def set_gradient_sync(
-        self,
-        sync: Callable[[Iterable[torch.Tensor]], None] | None,
-        *,
-        graph_replay_recorder: Callable[[int], None] | None = None,
-    ) -> None:
+    def set_gradient_sync(self, sync: Callable[[Iterable[torch.Tensor]], None] | None) -> None:
         """Attach the per-optimizer gradient collective used by multi-GPU DP."""
-        if sync is None and graph_replay_recorder is not None:
-            raise ValueError("graph_replay_recorder requires a gradient sync callback")
-        if sync != self._gradient_sync:
-            self._reset_critic_cuda_graph()
-            self._reset_actor_cuda_graph()
         self._gradient_sync = sync
-        self._gradient_sync_graph_replay_recorder = graph_replay_recorder
-        self.dp_cuda_graph_gradient_sync = self._dp_cuda_graph_gradient_sync_enabled()
-
-    def _dp_cuda_graph_gradient_sync_enabled(self) -> bool:
-        return bool(
-            self._gradient_sync is not None
-            and self.scaler is None
-            and (self.use_cuda_graph_critic or self.use_cuda_graph_actor)
-        )
 
     def _sync_gradients(self, parameters: Iterable[torch.Tensor]) -> None:
         if self._gradient_sync is not None:
             self._gradient_sync(parameters)
-            if self._active_cuda_graph_gradient_sync_calls is not None:
-                self._active_cuda_graph_gradient_sync_calls[0] += 1
-
-    def _record_cuda_graph_gradient_replay(self, collective_calls: int) -> None:
-        if self._gradient_sync_graph_replay_recorder is not None and collective_calls > 0:
-            self._gradient_sync_graph_replay_recorder(collective_calls)
-
-    def release_cuda_graphs(self) -> None:
-        """Release captured NCCL nodes before the process group is destroyed."""
-        self._reset_critic_cuda_graph()
-        self._reset_actor_cuda_graph()

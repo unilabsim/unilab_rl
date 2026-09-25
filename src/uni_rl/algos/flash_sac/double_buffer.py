@@ -97,14 +97,6 @@ def build_flashsac_double_buffer_runner(
         "compile_full_objectives": bool(
             getattr(cfg.algo.algo_params, "compile_full_objectives", False)
         ),
-        "use_cuda_graph_critic": cfg.algo.algo_params.use_cuda_graph_critic,
-        "use_cuda_graph_actor": cfg.algo.algo_params.use_cuda_graph_actor,
-        "use_cuda_graph_critic_packed_staging": (
-            cfg.algo.algo_params.use_cuda_graph_critic_packed_staging
-        ),
-        "use_cuda_graph_actor_packed_staging": (
-            cfg.algo.algo_params.use_cuda_graph_actor_packed_staging
-        ),
     }
     learner = FlashSACLearner(device=device, **learner_kwargs)
 

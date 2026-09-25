@@ -145,11 +145,6 @@ class TestConstructionGuards:
         with pytest.raises(ValueError, match="CUDA or MPS"):
             GPUResidentReplayPipeline(rb, device="cpu", sample_count=8)
 
-    def test_invalid_pack_layout_rejected(self):
-        rb = _make_replay(device="cpu")
-        with pytest.raises(ValueError, match="pack_layout"):
-            GPUResidentReplayPipeline(rb, device="cpu", sample_count=8, pack_layout="bogus")
-
     def test_runner_rejects_non_accelerator_before_base_initialization(self):
         from uni_rl.offpolicy.double_buffer_runner import (
             DoubleBufferOffPolicyRunner,
@@ -384,42 +379,6 @@ class TestGPUResidentPipeline:
             pipeline.sample_large_batch(2, 8)
         assert pipeline.batch_ready(2, 8) is False
 
-    def test_sac_graph_layout_column_order(self, pipeline_factory):
-        rb = _make_replay(capacity=128)
-        _pattern_add(rb, 0, 64)
-        pipeline = pipeline_factory(rb, sample_count=16, pack_layout="sac_graph")
-        batch = pipeline.sample_large_batch(1, 16)
-        src = batch["sac_graph_packed_source"]
-        assert src.shape == (16, rb.storage_width)
-        rewards = batch["rewards"].cpu()
-        expected = _expected_pattern(rb, rewards)
-        for key, want in expected.items():
-            torch.testing.assert_close(batch[key].cpu(), want)
-        # graph order: obs, critic, actions, rew, next_obs, next_critic, done, trunc
-        c = 0
-        torch.testing.assert_close(src[:, c : c + rb._obs_dim].cpu(), expected["obs"])
-        c += rb._obs_dim
-        torch.testing.assert_close(src[:, c : c + rb._critic_dim].cpu(), expected["critic"])
-        c += rb._critic_dim
-        torch.testing.assert_close(src[:, c : c + rb._action_dim].cpu(), expected["actions"])
-
-    def test_critic_graph_packed_source(self, pipeline_factory):
-        rb = _make_replay(capacity=128)
-        _pattern_add(rb, 0, 64)
-        pipeline = pipeline_factory(
-            rb,
-            sample_count=16,
-            use_critic_graph_packed_source=True,
-        )
-        batch = pipeline.sample_large_batch(1, 16)
-        cg = batch["critic_graph_packed_source"]
-        assert cg.shape == (16, rb.critic_graph_packed_width())
-        expected = _expected_pattern(rb, batch["rewards"].cpu())
-        # critic graph order: critic, actions, rew, next_obs, next_critic, done, trunc
-        torch.testing.assert_close(cg[:, : rb._critic_dim].cpu(), expected["critic"])
-        c = rb._critic_dim
-        torch.testing.assert_close(cg[:, c : c + rb._action_dim].cpu(), expected["actions"])
-
     def test_close_stops_thread_and_unregisters(self, pipeline_factory):
         rb = _make_replay(capacity=64)
         pipeline = pipeline_factory(rb, sample_count=8)
@@ -544,16 +503,3 @@ class TestMPSGPUResidentPipeline:
         batch = pipeline.sample_large_batch(1, 8)
 
         assert batch["obs"].device.type == "mps"
-
-    def test_mps_sac_graph_layout_preserves_columns(self, pipeline_factory):
-        rb = _make_replay(capacity=128, device="mps")
-        _pattern_add(rb, 0, 64)
-        pipeline = pipeline_factory(rb, sample_count=16, pack_layout="sac_graph")
-
-        batch = pipeline.sample_large_batch(1, 16)
-        rewards = batch["rewards"].cpu()
-        expected = _expected_pattern(rb, rewards)
-
-        assert batch["sac_graph_packed_source"].device.type == "mps"
-        for key, want in expected.items():
-            torch.testing.assert_close(batch[key].cpu(), want)
