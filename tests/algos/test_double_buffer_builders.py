@@ -132,10 +132,6 @@ def _flashsac_cfg() -> Any:
                         "amp_dtype": "bf16",
                         "use_compile": False,
                         "compile_full_objectives": True,
-                        "use_cuda_graph_critic": False,
-                        "use_cuda_graph_actor": False,
-                        "use_cuda_graph_critic_packed_staging": False,
-                        "use_cuda_graph_actor_packed_staging": False,
                     },
                 }
             ),

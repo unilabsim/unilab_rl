@@ -71,111 +71,7 @@ def test_flashsac_learner_exposes_expected_dims():
     assert learner.action_dim == 29
 
 
-def test_flashsac_cuda_graph_options_are_opt_in() -> None:
-    default_learner = _make_small_learner()
-
-    assert default_learner.supports_cuda_graph_packed_staging is True
-    assert default_learner.use_cuda_graph_critic is False
-    assert default_learner.use_cuda_graph_actor is False
-    assert default_learner.use_cuda_graph_critic_packed_staging is False
-    assert default_learner.use_cuda_graph_actor_packed_staging is False
-
-    graph_learner = _make_small_learner(
-        use_cuda_graph_critic=True,
-        use_cuda_graph_actor=True,
-        use_cuda_graph_critic_packed_staging=True,
-        use_cuda_graph_actor_packed_staging=True,
-    )
-
-    assert graph_learner.use_cuda_graph_critic is True
-    assert graph_learner.use_cuda_graph_actor is True
-    assert graph_learner.use_cuda_graph_critic_packed_staging is True
-    assert graph_learner.use_cuda_graph_actor_packed_staging is True
-
-
-def test_flashsac_update_critic_cuda_graph_falls_back_on_cpu() -> None:
-    learner = FlashSACLearner(
-        obs_dim=98,
-        action_dim=29,
-        critic_obs_dim=101,
-        device="cpu",
-        use_cuda_graph_critic=True,
-    )
-    batch = _make_batch(batch_size=4)
-
-    metrics = learner.update_critic_cuda_graph(batch)
-
-    assert "critic_loss" in metrics
-    assert "reward_scale_std" in metrics
-
-
-def test_flashsac_update_actor_cuda_graph_falls_back_on_cpu() -> None:
-    learner = FlashSACLearner(
-        obs_dim=98,
-        action_dim=29,
-        critic_obs_dim=101,
-        device="cpu",
-        use_cuda_graph_actor=True,
-    )
-    batch = _make_batch(batch_size=4)
-
-    metrics = learner.update_actor_cuda_graph(batch)
-
-    assert "actor_loss" in metrics
-    assert "temperature" in metrics
-
-
-def test_flashsac_sac_graph_packed_source_updates_critic_and_actor_views() -> None:
-    learner = _make_small_learner(
-        use_cuda_graph_critic=True,
-        use_cuda_graph_actor=True,
-        use_cuda_graph_critic_packed_staging=True,
-        use_cuda_graph_actor_packed_staging=True,
-    )
-    batch = {
-        "obs": torch.randn(4, 4),
-        "critic": torch.randn(4, 6),
-        "actions": torch.randn(4, 2),
-        "rewards": torch.randn(4),
-        "next_obs": torch.randn(4, 4),
-        "next_critic": torch.randn(4, 6),
-        "dones": torch.zeros(4),
-        "truncated": torch.zeros(4),
-    }
-    packed = torch.cat(
-        [
-            batch["obs"],
-            batch["critic"],
-            batch["actions"],
-            batch["rewards"].view(4, 1),
-            batch["next_obs"],
-            batch["next_critic"],
-            batch["dones"].view(4, 1),
-            batch["truncated"].view(4, 1),
-        ],
-        dim=1,
-    )
-    critic_shapes = learner._critic_graph_input_shapes(batch)
-    actor_shapes = learner._actor_graph_input_shapes(batch)
-
-    critic_views = learner._critic_graph_static_views_from_sac_packed(
-        packed,
-        critic_shapes,
-        actor_shapes,
-    )
-    actor_views = learner._actor_graph_static_views_from_sac_packed(packed, actor_shapes)
-
-    torch.testing.assert_close(critic_views["obs"], batch["obs"])
-    torch.testing.assert_close(critic_views["critic"], batch["critic"])
-    torch.testing.assert_close(critic_views["actions"], batch["actions"])
-    torch.testing.assert_close(critic_views["rewards"], batch["rewards"])
-    torch.testing.assert_close(critic_views["next_obs"], batch["next_obs"])
-    torch.testing.assert_close(critic_views["next_critic"], batch["next_critic"])
-    torch.testing.assert_close(actor_views["obs"], batch["obs"])
-    torch.testing.assert_close(actor_views["critic"], batch["critic"])
-
-
-def test_flashsac_cuda_adam_optimizers_are_capture_ready(monkeypatch) -> None:
+def test_flashsac_cuda_adam_optimizers_are_capturable(monkeypatch) -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA-only optimizer kwargs require a CUDA-enabled torch build")
 
@@ -246,68 +142,6 @@ def test_flashsac_compile_targets_training_hot_paths(monkeypatch) -> None:
         (
             "FlashSACLearner._actor_loss_tensors",
             {"options": {"triton.cudagraphs": True}},
-        ),
-    ]
-
-
-def test_flashsac_graph_critic_skips_compiling_critic_loss(monkeypatch) -> None:
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    def fake_compile(fn: Callable, **kwargs):
-        calls.append((fn.__qualname__, kwargs))
-        return fn
-
-    learner = FlashSACLearner(
-        obs_dim=98,
-        action_dim=29,
-        critic_obs_dim=101,
-        device="cpu",
-        use_cuda_graph_critic=True,
-    )
-    learner.device = torch.device("cuda")
-    monkeypatch.setattr(torch, "compile", fake_compile)
-
-    learner._compile_training_methods()
-
-    assert calls == [
-        (
-            "FlashSACActor.get_mean_and_std",
-            {"options": {"triton.cudagraphs": False}},
-        ),
-        (
-            "FlashSACLearner._actor_loss_tensors",
-            {"options": {"triton.cudagraphs": False}},
-        ),
-    ]
-
-
-def test_flashsac_graph_actor_skips_compiling_actor_loss(monkeypatch) -> None:
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    def fake_compile(fn: Callable, **kwargs):
-        calls.append((fn.__qualname__, kwargs))
-        return fn
-
-    learner = FlashSACLearner(
-        obs_dim=98,
-        action_dim=29,
-        critic_obs_dim=101,
-        device="cpu",
-        use_cuda_graph_actor=True,
-    )
-    learner.device = torch.device("cuda")
-    monkeypatch.setattr(torch, "compile", fake_compile)
-
-    learner._compile_training_methods()
-
-    assert calls == [
-        (
-            "FlashSACActor.get_mean_and_std",
-            {"options": {"triton.cudagraphs": False}},
-        ),
-        (
-            "FlashSACLearner._critic_loss_tensors",
-            {"options": {"triton.cudagraphs": False}},
         ),
     ]
 
@@ -420,41 +254,6 @@ def test_flashsac_deferred_actor_metrics_read_once_at_cycle_end() -> None:
     }
 
 
-def test_flashsac_graph_optimizer_materialization_restores_running_buffers() -> None:
-    learner = _make_small_learner()
-    batch = _make_small_batch()
-    critic_inputs = learner._prepare_critic_graph_inputs(batch)
-    actor_inputs = learner._prepare_actor_graph_inputs(batch)
-    modules = (learner.actor, learner.critic, learner.target_critic)
-    before = [buffer.clone() for module in modules for buffer in module.buffers()]
-
-    learner._materialize_capturable_critic_optimizer_state(critic_inputs)
-    learner._materialize_capturable_actor_optimizer_state(actor_inputs)
-
-    after = [buffer for module in modules for buffer in module.buffers()]
-    for actual, expected in zip(after, before, strict=True):
-        torch.testing.assert_close(actual, expected)
-
-
-def test_flashsac_critic_graph_normalizes_before_target_update(monkeypatch) -> None:
-    learner = _make_small_learner()
-    inputs = learner._prepare_critic_graph_inputs(_make_small_batch())
-    order: list[str] = []
-    monkeypatch.setattr(learner.critic, "normalize_parameters", lambda: order.append("normalize"))
-    monkeypatch.setattr(
-        "uni_rl.algos.flash_sac.learner.polyak_update_target",
-        lambda *_args: order.append("target"),
-    )
-
-    learner._update_critic_capture_candidate(
-        inputs,
-        update_target=True,
-        normalize_parameters=True,
-    )
-
-    assert order == ["normalize", "target"]
-
-
 def test_flashsac_state_dict_round_trip():
     learner = FlashSACLearner(obs_dim=98, action_dim=29, critic_obs_dim=101, device="cpu")
     batch = _make_batch()
@@ -537,7 +336,7 @@ def test_flashsac_td_target_treats_dones_as_combined_done_with_truncation_bootst
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph regression")
-def test_flashsac_td_target_is_cuda_graph_capture_safe() -> None:
+def test_flashsac_td_target_is_inductor_cuda_graph_safe() -> None:
     support = torch.linspace(-5.0, 5.0, 11, device="cuda")
     log_probs = torch.log_softmax(torch.randn(8, 11, device="cuda"), dim=-1)
     reward = torch.randn(8, device="cuda")
@@ -563,48 +362,3 @@ def test_flashsac_td_target_is_cuda_graph_capture_safe() -> None:
     graph.replay()
     torch.cuda.synchronize()
     assert torch.isfinite(static_output).all()
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph regression")
-@pytest.mark.parametrize("compile_full", [False, True])
-def test_flashsac_cuda_graph_first_call_replays_update_and_keeps_metrics(
-    compile_full: bool,
-) -> None:
-    learner = _make_small_learner(
-        device="cuda",
-        use_compile=compile_full,
-        compile_full_objectives=compile_full,
-        use_cuda_graph_critic=True,
-        use_cuda_graph_actor=True,
-    )
-    batch = {key: value.cuda() for key, value in _make_small_batch().items()}
-    critic_before = [parameter.detach().clone() for parameter in learner.critic.parameters()]
-    actor_before = [parameter.detach().clone() for parameter in learner.actor.parameters()]
-
-    critic_metrics = learner.update_critic_cuda_graph(batch)
-    actor_metrics = learner.update_actor_cuda_graph(batch)
-    torch.cuda.synchronize()
-
-    assert all(torch.isfinite(torch.tensor(value)) for value in critic_metrics.values())
-    assert all(torch.isfinite(torch.tensor(value)) for value in actor_metrics.values())
-    assert critic_metrics["reward_scale_std"] == pytest.approx(1.0)
-    assert actor_metrics["temperature"] == pytest.approx(0.01)
-    assert any(
-        not torch.equal(before, after)
-        for before, after in zip(critic_before, learner.critic.parameters(), strict=True)
-    )
-    assert any(
-        not torch.equal(before, after)
-        for before, after in zip(actor_before, learner.actor.parameters(), strict=True)
-    )
-    critic_steps = [state["step"] for state in learner.critic_optimizer.state.values()]
-    actor_steps = [state["step"] for state in learner.actor_optimizer.state.values()]
-    assert critic_steps and all(int(step.item()) == 1 for step in critic_steps)
-    assert actor_steps and all(int(step.item()) == 1 for step in actor_steps)
-
-    next_batch = {key: value.clone() for key, value in batch.items()}
-    next_batch["rewards"].add_(10.0)
-    next_metrics = learner.update_critic_cuda_graph(next_batch)
-    assert all(torch.isfinite(torch.tensor(value)) for value in next_metrics.values())
-    assert next_metrics["reward_scale_std"] == pytest.approx(1.0)
-    assert next_metrics["critic_loss"] != pytest.approx(critic_metrics["critic_loss"])

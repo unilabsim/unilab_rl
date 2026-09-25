@@ -206,12 +206,9 @@ class _Actor:
 
 
 class _Learner:
-    def __init__(self, *, critic_graph=False, actor_graph=False, supports_graph=True):
+    def __init__(self):
         self.actor = _Actor()
         self.update_count = 0
-        self.use_cuda_graph_critic_packed_staging = critic_graph
-        self.use_cuda_graph_actor_packed_staging = actor_graph
-        self.supports_cuda_graph_packed_staging = supports_graph
 
     def get_state_dict(self):
         return {"update_count": self.update_count}
@@ -391,21 +388,9 @@ def test_mjwarp_collector_start_forwards_learner_device(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.parametrize(
-    ("critic_graph", "actor_graph", "expected_layout", "expected_critic_source"),
-    [
-        (False, False, "packed", False),
-        (True, False, "packed", True),
-        (True, True, "sac_graph", False),
-    ],
-)
 def test_runner_constructs_only_bounded_device_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
-    critic_graph,
-    actor_graph,
-    expected_layout,
-    expected_critic_source,
 ):
     _FakePipeline.close_calls = 0
     monkeypatch.setattr(device_runner_module, "ReplayBuffer", _FakeReplayBuffer)
@@ -414,7 +399,7 @@ def test_runner_constructs_only_bounded_device_replay(
     monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
 
-    learner = _Learner(critic_graph=critic_graph, actor_graph=actor_graph)
+    learner = _Learner()
     runner = _make_device_runner(monkeypatch, learner)
     collector_kwargs = {}
 
@@ -434,8 +419,13 @@ def test_runner_constructs_only_bounded_device_replay(
         "ingress_slot_rows": 2,
         "ingress_depth": 2,
     }
-    assert _FakePipeline.last_kwargs["pack_layout"] == expected_layout
-    assert _FakePipeline.last_kwargs["use_critic_graph_packed_source"] is expected_critic_source
+    assert _FakePipeline.last_kwargs == {
+        "device": "cuda",
+        "sample_count": 8,
+        "base_seed": 0,
+        "trace_recorder": None,
+        "trace_cuda_events": True,
+    }
     runtime_manifest = runner.last_run_summary["runtime_manifest"]
     assert runtime_manifest["replay_h2d_submitter"] == runner.replay_h2d_submitter
     assert "replay_device_submission_thread" in runtime_manifest
@@ -525,15 +515,9 @@ def test_inference_response_freezes_next_replay_boundary_before_release(
     assert scheduler.pending_tick is None
 
 
-@pytest.mark.parametrize(
-    ("target_update_captured", "expects_external_target_update"),
-    [(False, True), (True, False)],
-)
 def test_runner_releases_action_before_replay_wait_and_sample(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
-    target_update_captured: bool,
-    expects_external_target_update: bool,
 ) -> None:
     events: list[str] = []
 
@@ -570,16 +554,8 @@ def test_runner_releases_action_before_replay_wait_and_sample(
             events.append("replay_after_tick")
 
     class LoopLearner(_Learner):
-        use_cuda_graph_critic = target_update_captured
-        cuda_graph_critic_captures_target_update = target_update_captured
-
         def update_critic(self, batch):
             del batch
-            events.append("update_critic")
-            return {}
-
-        def update_critic_cuda_graph(self, batch, *, read_metrics=True):
-            del batch, read_metrics
             events.append("update_critic")
             return {}
 
@@ -627,40 +603,34 @@ def test_runner_releases_action_before_replay_wait_and_sample(
     assert events.index("inference_response") < events.index("replay_batch_ready")
     assert events.index("inference_response") < events.index("replay_sample")
     assert events.index("inference_response") < events.index("update_critic")
-    assert ("soft_update_target" in events) is expects_external_target_update
+    assert "soft_update_target" in events
 
 
-def test_runtime_manifest_reports_cuda_graph_path_and_fallbacks(
+def test_runtime_manifest_reports_inductor_cuda_graph_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    learner = _Learner(critic_graph=True, actor_graph=True)
-    learner.use_cuda_graph_critic = True
-    learner.use_cuda_graph_actor = True
-    learner.scaler = None
-    learner.obs_normalizer = torch.nn.Identity()
-    learner.cuda_graph_critic_captures_target_update = True
+    learner = _Learner()
+    learner.use_compile = True
+    learner._host_finite_checks = False
 
     runner = _make_device_runner(monkeypatch, learner)
     graph_manifest = runner.runtime_manifest["cuda_graph"]
     assert graph_manifest == {
-        "critic_enabled": True,
-        "actor_enabled": True,
-        "critic_replay_active": True,
-        "actor_replay_active": True,
-        "inductor_critic_cudagraphs": False,
-        "inductor_actor_cudagraphs": False,
-        "device_finite_optimizer_gating": False,
-        "critic_packed_staging": True,
-        "actor_packed_staging": True,
-        "critic_captures_target_update": True,
-        "fallback_reasons": [],
+        "backend": "inductor",
+        "critic": True,
+        "actor": True,
+        "device_finite_optimizer_gating": True,
     }
 
-    learner.scaler = object()
+    learner.use_compile = False
+    learner._host_finite_checks = True
     fallback_manifest = runner._cuda_graph_runtime_manifest()
-    assert fallback_manifest["critic_replay_active"] is False
-    assert fallback_manifest["actor_replay_active"] is False
-    assert fallback_manifest["fallback_reasons"] == ["fp16_grad_scaler"]
+    assert fallback_manifest == {
+        "backend": "eager",
+        "critic": False,
+        "actor": False,
+        "device_finite_optimizer_gating": False,
+    }
 
 
 def _wait_for_inference_request(runner, inference_queue, *, expected_tick: int) -> int:

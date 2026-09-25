@@ -120,12 +120,8 @@ class GPUResidentReplayPipeline:
         base_seed: int = 0,
         trace_recorder=None,
         trace_cuda_events: bool = True,
-        pack_layout: str = "packed",
-        use_critic_graph_packed_source: bool = False,
     ) -> None:
         self._replay_buffer = replay_buffer
-        if pack_layout not in {"packed", "sac_graph"}:
-            raise ValueError("GPUResidentReplayPipeline pack_layout must be packed or sac_graph")
         self._device = torch.device(require_offpolicy_replay_device(device))
         if self._device.type not in {"cuda", "mps"}:
             raise ValueError(
@@ -136,39 +132,22 @@ class GPUResidentReplayPipeline:
             raise ValueError("GPUResidentReplayPipeline requires an available MPS device")
         self._main_thread_submission = self._device.type == "mps"
         self._learner_thread_id = threading.get_ident()
-        self._pack_layout = pack_layout
-        self._use_critic_graph_packed_source = (
-            bool(use_critic_graph_packed_source) and self._pack_layout != "sac_graph"
-        )
         self._sample_count = int(sample_count)
         self._base_seed = int(base_seed)
         self._trace_recorder = trace_recorder
         self._capacity = int(replay_buffer.capacity)
         self._storage_width = int(replay_buffer.storage_width)
-        self._packed_width = (
-            int(replay_buffer.sac_graph_packed_width())
-            if self._pack_layout == "sac_graph"
-            else self._storage_width
-        )
-        self._critic_graph_packed_width = (
-            int(replay_buffer.critic_graph_packed_width())
-            if self._use_critic_graph_packed_source
-            else 0
-        )
+        self._packed_width = self._storage_width
 
         # -- device memory guard (hard fail: this pipeline is opt-in) --
         storage_bytes = self._capacity * self._storage_width * 4
         slot_bytes = 2 * self._sample_count * self._packed_width * 4
-        scratch_bytes = (
-            self._sample_count * self._storage_width * 4 if self._pack_layout == "sac_graph" else 0
-        )
-        critic_slot_bytes = 2 * self._sample_count * self._critic_graph_packed_width * 4
-        required_bytes = storage_bytes + slot_bytes + scratch_bytes + critic_slot_bytes
+        required_bytes = storage_bytes + slot_bytes
         _validate_device_memory_budget(
             self._device,
             required_bytes=required_bytes,
             storage_bytes=storage_bytes,
-            batch_bytes=slot_bytes + scratch_bytes + critic_slot_bytes,
+            batch_bytes=slot_bytes,
             headroom=self._MEMORY_HEADROOM,
         )
 
@@ -201,25 +180,6 @@ class GPUResidentReplayPipeline:
             shape=(self._sample_count, self._packed_width),
             dtype=torch.float32,
         )
-        self._gpu_critic_graph_packed: list[torch.Tensor] = (
-            self._transfer_backend.allocate_device_slots(
-                count=2,
-                shape=(self._sample_count, self._critic_graph_packed_width),
-                dtype=torch.float32,
-            )
-            if self._use_critic_graph_packed_source
-            else []
-        )
-        self._gather_scratch: torch.Tensor | None = (
-            torch.empty(
-                (self._sample_count, self._storage_width),
-                dtype=torch.float32,
-                device=self._device,
-            )
-            if self._pack_layout == "sac_graph"
-            else None
-        )
-
         self._sync_stream: Any | None = None
         if self._device.type == "cuda":
             self._sync_stream = cast(torch.cuda.Stream, torch.cuda.Stream(device=self._device))
@@ -284,34 +244,6 @@ class GPUResidentReplayPipeline:
 
     def _packed_batch_view(self, packed: torch.Tensor) -> Dict[str, torch.Tensor]:
         rb = self._replay_buffer
-        if self._pack_layout == "sac_graph":
-            c = 0
-            obs_sl = slice(c, c + rb._obs_dim)
-            c += rb._obs_dim
-            critic_sl = slice(c, c + rb._critic_dim)
-            c += rb._critic_dim
-            act_sl = slice(c, c + rb._action_dim)
-            c += rb._action_dim
-            rew_col = c
-            c += 1
-            nobs_sl = slice(c, c + rb._obs_dim)
-            c += rb._obs_dim
-            ncritic_sl = slice(c, c + rb._critic_dim)
-            c += rb._critic_dim
-            done_col = c
-            c += 1
-            trunc_col = c
-            return {
-                "obs": packed[:, obs_sl],
-                "next_obs": packed[:, nobs_sl],
-                "actions": packed[:, act_sl],
-                "rewards": packed[:, rew_col],
-                "dones": packed[:, done_col],
-                "truncated": packed[:, trunc_col],
-                "critic": packed[:, critic_sl],
-                "next_critic": packed[:, ncritic_sl],
-                "sac_graph_packed_source": packed,
-            }
         batch = {
             "obs": packed[:, rb._obs_sl],
             "next_obs": packed[:, rb._nobs_sl],
@@ -326,10 +258,7 @@ class GPUResidentReplayPipeline:
         return batch
 
     def _large_batch_view(self, slot: int) -> Dict[str, torch.Tensor]:
-        batch = self._packed_batch_view(self._gpu_packed[slot])
-        if self._use_critic_graph_packed_source:
-            batch["critic_graph_packed_source"] = self._gpu_critic_graph_packed[slot]
-        return batch
+        return self._packed_batch_view(self._gpu_packed[slot])
 
     # -- device submission ---------------------------------------------------
 
@@ -510,18 +439,7 @@ class GPUResidentReplayPipeline:
             generator=gen,
             device=self._device,
         )
-        dst = self._gpu_packed[slot]
-        if self._pack_layout == "sac_graph":
-            assert self._gather_scratch is not None
-            torch.index_select(self._gpu_storage, 0, indices, out=self._gather_scratch)
-            self._replay_buffer.pack_sac_graph_source(self._gather_scratch, out=dst)
-        else:
-            torch.index_select(self._gpu_storage, 0, indices, out=dst)
-        if self._use_critic_graph_packed_source:
-            self._replay_buffer.pack_critic_graph_source(
-                dst,
-                out=self._gpu_critic_graph_packed[slot],
-            )
+        torch.index_select(self._gpu_storage, 0, indices, out=self._gpu_packed[slot])
 
     def _service_pending_prepare(self) -> bool:
         if self._main_thread_submission:
@@ -584,7 +502,6 @@ class GPUResidentReplayPipeline:
                     "snapshot_size": visible_size,
                     "required_ptr": required_ptr,
                     "visible_ptr": int(self._visible_ptr),
-                    "pack_layout": self._pack_layout,
                     "pipeline": "gpu_resident",
                 },
             )
@@ -600,7 +517,6 @@ class GPUResidentReplayPipeline:
                     "batch_gpu_slot": slot,
                     "sample_count": self._sample_count,
                     "gather_bytes": self._sample_count * self._packed_width * 4,
-                    "pack_layout": self._pack_layout,
                     "pipeline": "gpu_resident",
                 },
             )
@@ -869,7 +785,5 @@ class GPUResidentReplayPipeline:
         self._transfer_backend.close()
         self._host_pinned = False
         self._gpu_packed.clear()
-        self._gpu_critic_graph_packed.clear()
-        self._gather_scratch = None
         if hasattr(self, "_gpu_storage"):
             del self._gpu_storage

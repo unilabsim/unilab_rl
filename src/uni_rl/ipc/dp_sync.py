@@ -58,7 +58,6 @@ class DpParameterSync:
         self._gradient_sync_time_sec = 0.0
         self._gradient_sync_calls = 0
         self._gradient_buffers: dict[tuple[int, ...], torch.Tensor] = {}
-        self._cuda_graph_collective_ready = False
         self._started = False
 
     def start(self) -> None:
@@ -103,36 +102,12 @@ class DpParameterSync:
             for key in self._ordered_keys(tensors):
                 dist.broadcast(tensors[key], src=0)
 
-    def prepare_cuda_graph_collectives(self) -> None:
-        """Warm up NCCL before the first graph-captured gradient collective.
-
-        NCCL communicator and collective-specific lazy initialization must run
-        eagerly. Capturing the first all-reduce either fails at capture time or
-        produces a graph that hangs on replay with the supported TCP-loopback
-        transport. This mirrors PyTorch's c10d CUDA Graph tests: one eager
-        all-reduce followed by a device synchronize before capture.
-        """
-        if self._cuda_graph_collective_ready:
-            return
-        if not self._started:
-            raise RuntimeError("start() must run before CUDA Graph collective warmup")
-        if self.backend != "nccl" or self.device is None or self.device.type != "cuda":
-            raise RuntimeError(
-                "optimizer CUDA Graph gradient synchronization requires "
-                "an NCCL process group with an explicit CUDA device"
-            )
-
-        warmup = torch.ones(1, device=self.device)
-        dist.all_reduce(warmup, op=dist.ReduceOp.SUM)
-        torch.cuda.synchronize(self.device)
-        self._cuda_graph_collective_ready = True
-
     def allreduce_gradients(self, parameters: Iterable[torch.Tensor]) -> None:
         """Average one optimizer's gradients with one flat all-reduce.
 
-        Existing gradients are packed in parameter order, matching the manual
-        collective used by Holosoma FastSAC. All ranks must execute the same
-        optimizer graph and therefore present the same gradient layout.
+        Existing gradients are packed in parameter order. All ranks must
+        execute the same optimizer updates and therefore present the same
+        gradient layout.
         """
         sync_start = time.perf_counter()
         params = [
@@ -170,11 +145,6 @@ class DpParameterSync:
             packed[offset : offset + width].copy_(gradient.detach().reshape(-1))
             offset += width
 
-        capturing = device.type == "cuda" and torch.cuda.is_current_stream_capturing()
-        if capturing and not self._cuda_graph_collective_ready:
-            raise RuntimeError(
-                "NCCL gradient capture requires prepare_cuda_graph_collectives() first"
-            )
         dist.all_reduce(packed, op=dist.ReduceOp.SUM)
         packed.div_(self.world_size)
 
@@ -186,18 +156,8 @@ class DpParameterSync:
             gradient.copy_(packed[offset : offset + width].view_as(parameter))
             offset += width
 
-        # Python executes once while a CUDA Graph is captured, not on replay.
-        # Learners report replayed collectives separately so this metric counts
-        # actual executions rather than graph construction.
-        if not capturing:
-            self._gradient_sync_time_sec += time.perf_counter() - sync_start
-            self._gradient_sync_calls += 1
-
-    def record_cuda_graph_gradient_replay(self, collective_calls: int) -> None:
-        """Account for collectives executed by one optimizer graph replay."""
-        if collective_calls < 0:
-            raise ValueError(f"collective_calls must be >= 0, got {collective_calls}")
-        self._gradient_sync_calls += int(collective_calls)
+        self._gradient_sync_time_sec += time.perf_counter() - sync_start
+        self._gradient_sync_calls += 1
 
     def take_gradient_sync_metrics(self) -> tuple[float, int]:
         """Return and reset this rank's gradient-sync time and call count."""
@@ -331,7 +291,6 @@ class DpParameterSync:
         if dist.is_available() and dist.is_initialized():
             dist.destroy_process_group()
         self._gradient_buffers.clear()
-        self._cuda_graph_collective_ready = False
         self._started = False
 
     def _ordered_keys(self, tensors: dict[str, torch.Tensor]) -> tuple[str, ...]:

@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-25
+
+### Removed
+
+- Removed the unused manual whole-update CUDA Graph learner path and its four
+  public options: `use_cuda_graph_critic`, `use_cuda_graph_actor`,
+  `use_cuda_graph_critic_packed_staging`, and
+  `use_cuda_graph_actor_packed_staging`. CUDA learners retain the faster
+  default `torch.compile` path with Inductor CUDA Graph Trees.
+- Removed manual graph-only replay packing and NCCL gradient-capture plumbing.
+  GPU-resident packed replay and ordinary flat-gradient DP averaging remain
+  the single runtime paths.
+
+### Fixed
+
+- FastSAC's compiled C51 projection no longer caches an Inductor CUDA Graph
+  Trees output tensor in Python. Recreating the row-offset tensor inside the
+  traced expression avoids stale output storage across compiled replays.
+
 ## [1.3.4] - 2026-09-24
 
 ### Added
