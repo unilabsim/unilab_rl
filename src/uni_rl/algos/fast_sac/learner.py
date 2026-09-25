@@ -290,7 +290,8 @@ class DistributionalQNetwork(nn.Module):
         # Build the row offsets inside the traced expression.  A Python-side
         # cache would retain a CUDA Graph Trees output tensor; its storage can
         # be overwritten by the next replay and then fail when Dynamo reads it.
-        offset = torch.arange(batch_size, device=device).unsqueeze(1)
+        # Flattened rows are separated by ``num_atoms``, not by one atom.
+        offset = torch.arange(batch_size, device=device).unsqueeze(1) * self.num_atoms
 
         lower_indices = (lower + offset).view(-1)
         upper_indices = (upper + offset).view(-1)

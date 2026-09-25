@@ -22,7 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - FastSAC's compiled C51 projection no longer caches an Inductor CUDA Graph
   Trees output tensor in Python. Recreating the row-offset tensor inside the
-  traced expression avoids stale output storage across compiled replays.
+  traced expression avoids stale output storage across compiled replays; the
+  recreated offsets retain the original `num_atoms` row stride and therefore
+  preserve one normalized distribution per replay row.
 
 ## [1.3.4] - 2026-09-24
 
