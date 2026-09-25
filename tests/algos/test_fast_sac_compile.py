@@ -7,7 +7,11 @@ from typing import Any
 import pytest
 import torch
 
-from uni_rl.algos.fast_sac.learner import FastSACLearner, SACActor
+from uni_rl.algos.fast_sac.learner import (
+    DistributionalQNetwork,
+    FastSACLearner,
+    SACActor,
+)
 
 
 def _small_fast_sac_learner(*, use_autotune: bool = True) -> FastSACLearner:
@@ -73,6 +77,52 @@ def test_fast_sac_compile_targets_training_hot_paths(monkeypatch) -> None:
             {"options": {"triton.cudagraphs": True}},
         ),
     ]
+
+
+def test_fast_sac_categorical_projection_preserves_rows() -> None:
+    num_atoms = 5
+    qnet = DistributionalQNetwork(
+        obs_dim=4,
+        action_dim=2,
+        num_atoms=num_atoms,
+        v_min=-2.0,
+        v_max=2.0,
+        hidden_dim=8,
+        use_layer_norm=False,
+    )
+    # A uniform next-state distribution makes the expected projection independent
+    # of the initialized hidden layers.
+    with torch.no_grad():
+        qnet.net[-1].weight.zero_()
+        qnet.net[-1].bias.zero_()
+    support = torch.linspace(qnet.v_min, qnet.v_max, num_atoms)
+    rewards = torch.tensor([-0.7, 0.0, 0.3, 1.1])
+    bootstrap = torch.tensor([0.0, 1.0, 1.0, 1.0])
+    discount = torch.full_like(rewards, 0.9)
+
+    projected = qnet.projection(
+        torch.zeros(4, 4),
+        torch.zeros(4, 2),
+        rewards,
+        bootstrap,
+        discount,
+        support,
+        support.device,
+    )
+
+    expected = torch.zeros_like(projected)
+    next_probability = 1.0 / num_atoms
+    for row, reward in enumerate(rewards):
+        target_z = (reward + bootstrap[row] * discount[row] * support).clamp(qnet.v_min, qnet.v_max)
+        position = (target_z - qnet.v_min) / ((qnet.v_max - qnet.v_min) / (num_atoms - 1))
+        lower = position.floor().long()
+        upper = (lower + 1).clamp(max=num_atoms - 1)
+        upper_weight = position - lower
+        expected[row].scatter_add_(0, lower, next_probability * (1.0 - upper_weight))
+        expected[row].scatter_add_(0, upper, next_probability * upper_weight)
+
+    assert torch.allclose(projected, expected, atol=1e-6)
+    assert torch.allclose(projected.sum(dim=-1), torch.ones(4), atol=1e-6)
 
 
 def test_fast_sac_cuda_adamw_optimizers_are_capturable(monkeypatch) -> None:
