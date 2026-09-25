@@ -35,14 +35,14 @@ UniLab 以可选依赖（`unilab[uni_rl]`）消费 `uni_rl`，用于 APPO、off-
 
 - **异步 PPO（APPO)**：原生 collector/learner 多进程实现（actor/critic 网络
   基于 [rsl_rl](https://github.com/leggedrobotics/rsl_rl) 模型类）
-- **Off-policy**：FastSAC、FlashSAC，配 double-buffer 异步 runner
+- **Off-policy**：FastSAC、FlashSAC、WarpSAC，配 double-buffer 异步 runner
 - **Runtime 基础设施**：共享内存 rollout/replay buffer、replay pipeline、
   DP 梯度同步、显存预算、tensorboard/wandb 训练 logger 与 trace recorder
 
 ## 目录结构
 
 - `uni_rl.algos.*` — 算法层：异步 on-policy（`appo`）、off-policy
-  learner（`fast_sac`、`flash_sac`）与共享算法辅助（`common`）
+  learner（`fast_sac`、`flash_sac`、`warp_sac`）与共享算法辅助（`common`）
 - `uni_rl.ipc` — runtime 基础设施：异步 runner、共享内存 rollout/replay
   buffer、replay pipeline、DP 梯度同步、显存预算
 - `uni_rl.offpolicy` — 通用 off-policy double-buffer runner 脚手架

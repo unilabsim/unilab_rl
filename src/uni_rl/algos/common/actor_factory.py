@@ -60,6 +60,18 @@ def build_actor(
             noise_zeta_max=actor_noise_zeta_max,
             device=device,
         )
+    if algo_type == "warpsac":
+        from uni_rl.algos.flash_sac.network import FlashSACActor
+
+        return FlashSACActor(
+            num_blocks=actor_num_blocks,
+            input_dim=obs_dim,
+            hidden_dim=actor_hidden_dim,
+            action_dim=action_dim,
+            noise_zeta_mu=actor_noise_zeta_mu,
+            noise_zeta_max=actor_noise_zeta_max,
+            device=device,
+        )
     raise ValueError(
         f"Unknown algo_type: {algo_type}. Custom off-policy actor types must "
         "register an OffPolicyActorAdapter via register_offpolicy_actor_adapter() "
