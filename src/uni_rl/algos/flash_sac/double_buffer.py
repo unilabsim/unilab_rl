@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from uni_rl.algos.flash_sac.learner import FlashSACLearner
 from uni_rl.env_contract import EnvFactory
 from uni_rl.ipc.replay_pipelines.gpu_resident import require_offpolicy_replay_device
+from uni_rl.offpolicy.actor_adapter import import_actor_adapter_modules
 from uni_rl.offpolicy.double_buffer_runner import DoubleBufferOffPolicyRunner
+from uni_rl.offpolicy.runtime import resolve_actor_adapter_modules, resolve_custom_offpolicy_runtime
 from uni_rl.utils.device import get_default_device
 from uni_rl.utils.nan_guard import NanGuardCfg
 from uni_rl.utils.observations import get_obs_dims
@@ -51,6 +53,13 @@ def build_flashsac_double_buffer_runner(
         cfg,
         replay_prefetch_mode=replay_prefetch_mode,
     )
+    rl_cfg = cast(dict[str, Any], OmegaConf.to_container(cfg.algo, resolve=True))
+    custom_runtime = resolve_custom_offpolicy_runtime(rl_cfg)
+    # Import registration modules before the learner builds its actor so
+    # custom adapter registrations are live in this process; the runner
+    # forwards the list to the spawn collector.
+    actor_adapter_modules = resolve_actor_adapter_modules(rl_cfg, custom_runtime)
+    import_actor_adapter_modules(actor_adapter_modules)
 
     env = env_factory(1, env_cfg_override)
     try:
@@ -60,6 +69,22 @@ def build_flashsac_double_buffer_runner(
         action_dim = int(action_shape[0])
     finally:
         env.close()
+
+    learner_cls: type[Any] = FlashSACLearner
+    algo_type = "flashsac"
+    learner_extra_kwargs: dict[str, Any] = {}
+    if custom_runtime is not None:
+        learner_extra_kwargs = cast(
+            dict[str, Any],
+            custom_runtime.build_model_kwargs(
+                obs_dim=int(obs_dim),
+                critic_obs_dim=int(critic_obs_dim),
+            ),
+        )
+        if custom_runtime.learner_cls is not None:
+            learner_cls = custom_runtime.learner_cls
+        if custom_runtime.algo_type is not None:
+            algo_type = str(custom_runtime.algo_type)
 
     learner_kwargs = {
         "obs_dim": obs_dim,
@@ -106,12 +131,13 @@ def build_flashsac_double_buffer_runner(
             cfg.algo.algo_params.use_cuda_graph_actor_packed_staging
         ),
     }
-    learner = FlashSACLearner(device=device, **learner_kwargs)
+    learner_kwargs.update(learner_extra_kwargs)
+    learner = learner_cls(device=device, **learner_kwargs)
 
     return DoubleBufferOffPolicyRunner(
         learner=learner,
         env_name=cfg.training.task_name,
-        algo_type="flashsac",
+        algo_type=algo_type,
         env_factory=env_factory,
         num_envs=cfg.algo.num_envs,
         replay_buffer_n=cfg.algo.replay_buffer_n,
@@ -136,4 +162,5 @@ def build_flashsac_double_buffer_runner(
         dp_sync=dp_sync,
         backend_device_binder=backend_device_binder,
         inference_request_timeout_sec=cfg.training.inference_request_timeout_sec,
+        actor_adapter_modules=actor_adapter_modules,
     )
