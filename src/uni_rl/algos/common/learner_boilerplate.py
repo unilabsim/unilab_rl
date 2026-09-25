@@ -32,6 +32,41 @@ def polyak_update_target(target: nn.Module, source: nn.Module, tau: float) -> No
                 tgt.lerp_(src, tau)
 
 
+def fused_adam_supported(device_type: str) -> bool:
+    """Whether this torch build provides a fused Adam/AdamW kernel for the device.
+
+    Fused kernels collapse the per-parameter host loop into one launch; on MPS
+    the single-tensor fallback additionally performs a blocking `.item()` per
+    parameter per step, which dominates learner time there.  CUDA has always
+    been supported; MPS fused kernels ship with torch >= 2.6.  Other devices
+    keep the default path.
+    """
+    if device_type == "cuda":
+        return True
+    if device_type != "mps":
+        return False
+    try:
+        from torch.utils._foreach_utils import (  # pyright: ignore[reportPrivateImportUsage]
+            _get_fused_kernels_supported_devices,
+        )
+    except ImportError:
+        return False
+    return device_type in _get_fused_kernels_supported_devices()
+
+
+def resolve_finite_check_flags(device_type: str, device_gated: bool) -> tuple[bool, bool]:
+    """Return ``(host_finite_checks, metrics_finite_checks)`` for a learner.
+
+    ``device_gated`` marks the CUDA compile/graph paths whose fused kernels
+    skip non-finite steps on-device.  MPS has no equivalent (its fused AdamW
+    kernel ignores ``found_inf``), so host checks there are deferred to the
+    metrics-reading update of each iteration — every check is a blocking MPS
+    sync, and a non-finite loss is detected at that same sync boundary.
+    """
+    host_finite_checks = not device_gated
+    return host_finite_checks, host_finite_checks and device_type == "mps"
+
+
 class LearnerBoilerplateMixin:
     """Shared AMP / gradient-sync / obs-normalizer / compile boilerplate.
 
@@ -52,6 +87,21 @@ class LearnerBoilerplateMixin:
     _critic_loss_tensors: Callable[..., Any]
     _actor_loss_tensors: Callable[..., Any]
     _compile_loss_cudagraphs: bool = False
+    _host_finite_checks: bool
+    _metrics_finite_checks: bool
+
+    def _finite_check_ok(self, loss: torch.Tensor, read_metrics: bool) -> bool:
+        """Host-side finite guard for one loss.
+
+        On MPS the check is deferred to the metrics-reading update of each
+        iteration (``_metrics_finite_checks``); every other device keeps the
+        original per-update check semantics.
+        """
+        if not self._host_finite_checks:
+            return True
+        if self._metrics_finite_checks and not read_metrics:
+            return True
+        return bool(torch.isfinite(loss))
 
     def _reset_critic_cuda_graph(self) -> None:
         raise NotImplementedError

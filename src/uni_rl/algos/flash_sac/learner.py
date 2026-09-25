@@ -15,7 +15,9 @@ import torch.optim as optim
 from uni_rl.algos.common.compile import get_torch_compile_for_cuda
 from uni_rl.algos.common.learner_boilerplate import (
     LearnerBoilerplateMixin,
+    fused_adam_supported,
     polyak_update_target,
+    resolve_finite_check_flags,
 )
 from uni_rl.algos.common.normalization import EmpiricalNormalization
 from uni_rl.algos.flash_sac.network import (
@@ -206,12 +208,19 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         )
         self.compile_full_objectives = bool(compile_full_objectives and self.use_compile)
         self._device_type = self.device.type
-        # Host-side ``Tensor.item``/truth checks synchronize CUDA.  Compiled
-        # and manually captured paths use the fused optimizer's device gate;
-        # CPU/eager CUDA paths retain the explicit safety behavior.
-        self._host_finite_checks = not (
-            self._device_type == "cuda"
-            and (self.use_compile or use_cuda_graph_critic or use_cuda_graph_actor)
+        # Host-side ``Tensor.item``/truth checks synchronize the device.
+        # Compiled and manually captured CUDA paths use the fused optimizer's
+        # device gate; MPS has no device-side skip (its fused Adam kernel
+        # ignores ``found_inf``), so host checks there run only on the
+        # metrics-reading update of each iteration — see
+        # `resolve_finite_check_flags`.  CPU/eager CUDA paths retain the
+        # explicit per-update safety behavior.
+        self._host_finite_checks, self._metrics_finite_checks = resolve_finite_check_flags(
+            self._device_type,
+            device_gated=(
+                self._device_type == "cuda"
+                and (self.use_compile or use_cuda_graph_critic or use_cuda_graph_actor)
+            ),
         )
         self.use_cuda_graph_critic = bool(use_cuda_graph_critic)
         self.use_cuda_graph_actor = bool(use_cuda_graph_actor)
@@ -281,8 +290,12 @@ class FlashSACLearner(LearnerBoilerplateMixin):
             else None
         )
         lr_peak = learning_rate_peak if learning_rate_peak > 0 else actor_lr
-        optimizer_kwargs: dict[str, Any] = {"fused": self.device.type == "cuda"}
-        if self.device.type == "cuda":
+        # Fused Adam collapses the per-parameter host loop (and its per-param
+        # blocking `.item()` syncs on MPS) into one kernel; `capturable`
+        # stays CUDA-only.
+        _fused = fused_adam_supported(self.device.type)
+        optimizer_kwargs: dict[str, Any] = {"fused": _fused}
+        if _fused and self.device.type == "cuda":
             optimizer_kwargs["capturable"] = True
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr_peak, **optimizer_kwargs)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr_peak, **optimizer_kwargs)
@@ -1147,7 +1160,7 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         )
 
         self.critic_optimizer.zero_grad(set_to_none=True)
-        if not self._host_finite_checks or bool(torch.isfinite(critic_loss)):
+        if self._finite_check_ok(critic_loss, read_metrics):
             if self.scaler is not None:
                 self.scaler.scale(critic_loss).backward()
                 self._sync_gradients(self.critic.parameters())
@@ -1193,7 +1206,7 @@ class FlashSACLearner(LearnerBoilerplateMixin):
             )
 
         self.actor_optimizer.zero_grad(set_to_none=True)
-        if not self._host_finite_checks or bool(torch.isfinite(actor_loss)):
+        if self._finite_check_ok(actor_loss, read_metrics):
             if self.scaler is not None:
                 self.scaler.scale(actor_loss).backward()
                 self._sync_gradients(self.actor.parameters())
@@ -1211,7 +1224,7 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         temp_value = self.temperature()
         temp_loss = temp_value * (entropy - self.target_entropy)
         self.temperature_optimizer.zero_grad(set_to_none=True)
-        if not self._host_finite_checks or bool(torch.isfinite(temp_loss)):
+        if self._finite_check_ok(temp_loss, read_metrics):
             temp_loss.backward()
             self._sync_gradients(self.temperature.parameters())
             with self._optimizer_finite_gate(self.temperature_optimizer, temp_loss):
