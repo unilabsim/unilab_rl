@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.0] - 2026-09-25
 
+### Added
+
+- New WarpSAC algorithm package. `WarpSACLearner` inherits UniLab's FlashSAC
+  learner without modifying it, while `WarpSACReplayPipeline` adds the official
+  implementation's bucketed linear age-bias replay sampling to the asynchronous
+  device-authoritative runtime.
+- WarpSAC double-buffer builder with `decay_step`, `replay_min_weight`,
+  `replay_num_buckets`, `target_frequency`, and actor/critic
+  parameter-normalization switches.
+- Generic off-policy replay-pipeline injection so algorithm owners can provide
+  specialized device-resident samplers without changing FlashSAC.
+
 ### Removed
 
 - Removed the unused manual whole-update CUDA Graph learner path and its four

@@ -49,6 +49,7 @@ from uni_rl.utils.seed import derive_worker_seed
 _ALGO_DISPLAY_NAMES = {
     "sac": "SAC",
     "flashsac": "FlashSAC",
+    "warpsac": "WarpSAC",
 }
 
 _DP_METRIC_PREFIX = "metric::"
@@ -164,6 +165,9 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         dp_sync: DpParameterSync | None = None,
         inference_request_timeout_sec: float | None = None,
         backend_device_binder: Callable[[str], str | None] | None = None,
+        replay_pipeline_factory: Callable[..., GPUResidentReplayPipeline] | None = None,
+        target_frequency: int = 1,
+        policy_before_critic: bool = False,
         **kwargs,
     ):
         kwargs["device"] = require_offpolicy_replay_device(kwargs.get("device"))
@@ -194,6 +198,8 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             if inference_request_timeout_sec is not None
             else self.INFERENCE_REQUEST_TIMEOUT_SEC
         )
+        self.target_frequency = max(int(target_frequency), 1)
+        self.policy_before_critic = bool(policy_before_critic)
         # Per-rank CPU block owned by this rank's collector (multi-GPU DP);
         # merged into the collector-only env override at collector startup.
         self.collector_cpu_ids = list(collector_cpu_ids) if collector_cpu_ids is not None else None
@@ -201,6 +207,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         # Backend-owned process-device binder forwarded to the collector
         # subprocess (e.g. mjwarp); None for backends that need no binding.
         self.backend_device_binder = backend_device_binder
+        self.replay_pipeline_factory = replay_pipeline_factory
         self._collector_ready = False
         # Multi-GPU synchronous data parallelism (None = the bit-identical
         # single-rank path): startup model broadcast, then gradient averaging
@@ -886,7 +893,8 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
 
         # --- authoritative device ring and hot/cold learner batches ---
         sample_count = self.batch_size * self.updates_per_step
-        replay_pipeline = GPUResidentReplayPipeline(
+        replay_pipeline_factory = self.replay_pipeline_factory or GPUResidentReplayPipeline
+        replay_pipeline = replay_pipeline_factory(
             replay_buffer,
             device=self.device,
             sample_count=sample_count,
@@ -1234,11 +1242,42 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                     train_start = time.perf_counter()
                     train_phase_start_ns = time.perf_counter_ns()
 
+                    def run_actor_update(batch: dict[str, torch.Tensor], update_idx: int) -> None:
+                        next_actor_update = update_idx + self.policy_frequency
+                        defer_actor_metrics = bool(
+                            getattr(learner, "supports_deferred_update_metrics", False)
+                        )
+                        read_deferred_actor_metrics = (
+                            next_actor_update >= self.updates_per_step and not defer_actor_metrics
+                        )
+                        _actor_ns = time.perf_counter_ns()
+                        if getattr(learner, "supports_deferred_update_metrics", False):
+                            actor_metrics = learner.update_actor(
+                                batch,
+                                read_metrics=read_deferred_actor_metrics,
+                            )
+                        else:
+                            actor_metrics = learner.update_actor(batch)
+                        if trace_recorder:
+                            trace_recorder.add_slice(
+                                "learner/update_actor",
+                                category="learner",
+                                start_ns=_actor_ns,
+                                end_ns=time.perf_counter_ns(),
+                                args={"update_idx": update_idx},
+                            )
+                        for k, v in actor_metrics.items():
+                            iter_metrics[k].append(v)
+
                     for update_idx in range(self.updates_per_step):
                         s = update_idx * self.batch_size
                         e = s + self.batch_size
                         batch = {k: v[s:e] for k, v in large_batch.items()}
                         read_deferred_critic_metrics = update_idx == self.updates_per_step - 1
+                        do_actor_update = update_idx % self.policy_frequency == 0
+
+                        if self.policy_before_critic and do_actor_update:
+                            run_actor_update(batch, update_idx)
 
                         _critic_ns = time.perf_counter_ns()
                         if getattr(learner, "supports_deferred_update_metrics", False):
@@ -1259,36 +1298,12 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                         for k, v in critic_metrics.items():
                             iter_metrics[k].append(v)
 
-                        if update_idx % self.policy_frequency == 0:
-                            next_actor_update = update_idx + self.policy_frequency
-                            defer_actor_metrics = bool(
-                                getattr(learner, "supports_deferred_update_metrics", False)
-                            )
-                            read_deferred_actor_metrics = (
-                                next_actor_update >= self.updates_per_step
-                                and not defer_actor_metrics
-                            )
-                            _actor_ns = time.perf_counter_ns()
-                            if getattr(learner, "supports_deferred_update_metrics", False):
-                                actor_metrics = learner.update_actor(
-                                    batch,
-                                    read_metrics=read_deferred_actor_metrics,
-                                )
-                            else:
-                                actor_metrics = learner.update_actor(batch)
-                            if trace_recorder:
-                                trace_recorder.add_slice(
-                                    "learner/update_actor",
-                                    category="learner",
-                                    start_ns=_actor_ns,
-                                    end_ns=time.perf_counter_ns(),
-                                    args={"update_idx": update_idx},
-                                )
-                            for k, v in actor_metrics.items():
-                                iter_metrics[k].append(v)
+                        if not self.policy_before_critic and do_actor_update:
+                            run_actor_update(batch, update_idx)
 
                         _target_ns = time.perf_counter_ns()
-                        learner.soft_update_target()
+                        if update_idx % self.target_frequency == 0:
+                            learner.soft_update_target()
                         replay_pipeline.progress()
                         if trace_recorder:
                             trace_recorder.add_slice(
