@@ -46,3 +46,9 @@ def get_torch_compile_for_cuda(
             )
         return None
     return cast(Callable[..., Any], compile_fn)
+
+
+def is_hip_runtime() -> bool:
+    """Whether PyTorch presents a ROCm/HIP CUDA device runtime."""
+    torch_version = cast(Any, torch.__dict__.get("version"))
+    return bool(getattr(torch_version, "hip", None))

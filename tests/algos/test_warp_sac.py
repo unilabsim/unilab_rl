@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pytest
@@ -263,3 +264,45 @@ def test_warpsac_builder_uses_regime_aware_replay_factory(
     assert runner.kwargs["algo_type"] == "warpsac"
     assert runner.kwargs["policy_before_critic"] is True
     assert runner.kwargs["target_frequency"] == 1
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA-only inherited whole-cycle graph")
+def test_warpsac_inherits_flashsac_whole_cycle_cuda_graph() -> None:
+    torch.manual_seed(123)
+    learner = WarpSACLearner(
+        obs_dim=4,
+        action_dim=2,
+        critic_obs_dim=6,
+        actor_hidden_dim=16,
+        critic_hidden_dim=16,
+        actor_num_blocks=1,
+        critic_num_blocks=1,
+        num_atoms=5,
+        device="cuda:0",
+        use_compile=True,
+        actor_normalize_parameters=False,
+        critic_normalize_parameters=False,
+    )
+    batch = {
+        "obs": torch.randn(16, 4, device="cuda:0"),
+        "critic": torch.randn(16, 6, device="cuda:0"),
+        "actions": torch.tanh(torch.randn(16, 2, device="cuda:0")),
+        "rewards": torch.randn(16, device="cuda:0"),
+        "next_obs": torch.randn(16, 4, device="cuda:0"),
+        "next_critic": torch.randn(16, 6, device="cuda:0"),
+        "dones": torch.zeros(16, device="cuda:0"),
+        "truncated": torch.zeros(16, device="cuda:0"),
+    }
+
+    learner.update_cycle(
+        batch,
+        updates_per_step=4,
+        policy_frequency=2,
+        target_frequency=1,
+        policy_before_critic=True,
+    )
+    metrics = learner.read_deferred_cycle_metrics()
+
+    assert learner._update_cycle_graph is not None
+    assert metrics
+    assert all(math.isfinite(value) for value in metrics.values())

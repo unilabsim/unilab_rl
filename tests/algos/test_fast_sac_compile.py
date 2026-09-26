@@ -80,50 +80,59 @@ def test_fast_sac_compile_targets_training_hot_paths(monkeypatch) -> None:
     ]
 
 
-def test_fast_sac_gradient_sync_falls_back_to_loss_graph_trees(monkeypatch) -> None:
-    calls: list[tuple[str, dict[str, Any]]] = []
+def test_fast_sac_gradient_sync_rejects_dp_in_whole_cycle_mode() -> None:
+    learner = _small_fast_sac_learner()
+    learner._compile_full_update_cycle = True
 
-    def fake_compile(fn: Callable, **kwargs):
-        calls.append((fn.__qualname__, kwargs))
-        return fn
+    with pytest.raises(RuntimeError, match="does not support DP fallback"):
+        learner.set_gradient_sync(lambda _parameters: None)
 
+    assert learner.use_update_cycle is True
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="NVIDIA CUDA runtime required")
+def test_fast_sac_nvidia_cuda_fails_closed_without_inductor(monkeypatch) -> None:
+    monkeypatch.setattr(
+        fast_sac_module, "get_torch_compile_for_cuda", lambda *_args, **_kwargs: None
+    )
+
+    with pytest.raises(RuntimeError, match="requires CUDA Inductor/Triton"):
+        FastSACLearner(
+            obs_dim=4,
+            action_dim=2,
+            critic_obs_dim=5,
+            device="cuda:0",
+            use_compile=False,
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="NVIDIA CUDA runtime required")
+def test_fast_sac_nvidia_cuda_fails_closed_for_graph_incompatible_options(monkeypatch) -> None:
     monkeypatch.setattr(
         fast_sac_module,
         "get_torch_compile_for_cuda",
-        lambda *_args, **_kwargs: fake_compile,
+        lambda *_args, **_kwargs: lambda fn: fn,
     )
-    learner = _small_fast_sac_learner()
-    learner.use_compile = True
-    learner._compile_full_update_cycle = True
+    common = {
+        "obs_dim": 4,
+        "action_dim": 2,
+        "critic_obs_dim": 5,
+        "device": "cuda:0",
+        "actor_hidden_dim": 8,
+        "critic_hidden_dim": 8,
+        "num_atoms": 3,
+        "num_q_networks": 2,
+        "use_layer_norm": False,
+    }
 
-    learner.set_gradient_sync(lambda _parameters: None)
+    with pytest.raises(ValueError, match="fp16 GradScaler"):
+        FastSACLearner(**common, use_amp=True, amp_dtype="fp16")
 
-    assert learner.use_update_cycle is False
-    assert calls == [
-        (
-            "FastSACLearner._critic_loss_tensors",
-            {"dynamic": False, "options": {"triton.cudagraphs": True}},
-        ),
-        (
-            "FastSACLearner._actor_loss_tensors",
-            {"dynamic": False, "options": {"triton.cudagraphs": True}},
-        ),
-    ]
+    with pytest.raises(ValueError, match="obs normalization"):
+        FastSACLearner(**common, obs_normalization=True)
 
-    calls.clear()
-    learner._compile_full_update_cycle = True
-    learner._compile_training_methods()
-
-    assert calls == [
-        (
-            "FastSACLearner._critic_loss_tensors",
-            {"dynamic": False, "options": {"triton.cudagraphs": False}},
-        ),
-        (
-            "FastSACLearner._actor_loss_tensors",
-            {"dynamic": False, "options": {"triton.cudagraphs": False}},
-        ),
-    ]
+    with pytest.raises(ValueError, match="NVTX ranges"):
+        FastSACLearner(**common, nvtx_profile_ranges=True)
 
 
 def test_fast_sac_categorical_projection_preserves_rows() -> None:
@@ -183,6 +192,15 @@ def test_fast_sac_cuda_adamw_optimizers_are_capturable(monkeypatch) -> None:
             calls.append(kwargs)
 
     monkeypatch.setattr(torch.optim, "AdamW", _FakeAdamW)
+    monkeypatch.setattr(
+        fast_sac_module,
+        "get_torch_compile_for_cuda",
+        lambda *_args, **_kwargs: lambda fn: fn,
+    )
+    monkeypatch.setattr(
+        FastSACLearner, "_materialize_capturable_optimizer_state", lambda _self: None
+    )
+    monkeypatch.setattr(FastSACLearner, "_compile_training_methods", lambda _self: None)
 
     for device in ("cuda", torch.device("cuda")):
         FastSACLearner(
@@ -196,7 +214,7 @@ def test_fast_sac_cuda_adamw_optimizers_are_capturable(monkeypatch) -> None:
             num_q_networks=2,
             use_layer_norm=False,
             use_autotune=False,
-            use_compile=False,
+            use_compile=True,
         )
 
     assert len(calls) == 6
@@ -478,7 +496,9 @@ def test_fast_sac_update_cycle_defers_metrics_until_one_read() -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA-only whole-cycle graph")
-def test_fast_sac_update_cycle_raw_graph_replays_with_stable_inputs_and_metrics() -> None:
+def test_fast_sac_update_cycle_raw_graph_replays_with_stable_inputs_and_metrics(
+    monkeypatch,
+) -> None:
     torch.manual_seed(123)
     learner = FastSACLearner(
         obs_dim=4,
@@ -493,6 +513,7 @@ def test_fast_sac_update_cycle_raw_graph_replays_with_stable_inputs_and_metrics(
         use_compile=True,
     )
     torch.manual_seed(123)
+    monkeypatch.setattr(torch.version, "hip", "simulated-rocm", raising=False)
     eager_learner = FastSACLearner(
         obs_dim=4,
         action_dim=2,
@@ -624,40 +645,6 @@ def test_fast_sac_update_cycle_rekeys_on_shape_and_invalidates_checkpoint() -> N
     assert learner._update_cycle_graph is None
     assert learner._update_cycle_graph_cache_key is None
     assert learner._update_cycle_static_batch is None
-
-
-@pytest.mark.parametrize(("loss_value", "grad_value"), [(float("nan"), 1.0), (1.0, float("nan"))])
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA-only fused optimizer gate")
-def test_fast_sac_device_finite_gate_skips_nonfinite_optimizer_step(
-    loss_value: float,
-    grad_value: float,
-) -> None:
-    learner = FastSACLearner(
-        obs_dim=4,
-        action_dim=2,
-        critic_obs_dim=5,
-        device="cuda:0",
-        actor_hidden_dim=8,
-        critic_hidden_dim=8,
-        num_atoms=3,
-        num_q_networks=2,
-        use_layer_norm=False,
-        use_compile=True,
-    )
-    parameter = next(learner.qnet.parameters())
-    parameter.grad = torch.full_like(parameter, grad_value)
-    if not math.isfinite(grad_value):
-        learner._gradient_sync = lambda _parameters: None
-    before = parameter.detach().clone()
-
-    with learner._optimizer_finite_gate(
-        learner.q_optimizer,
-        torch.full((), loss_value, device="cuda:0"),
-    ):
-        learner.q_optimizer.step()
-    torch.cuda.synchronize()
-
-    torch.testing.assert_close(parameter, before)
 
 
 @pytest.mark.parametrize(

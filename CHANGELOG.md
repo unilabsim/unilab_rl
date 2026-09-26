@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unaffected; only TensorBoard/wandb writes are gated, and the final iteration
   is always logged.
 
+### Changed
+
+- FastSAC, FlashSAC, and inherited WarpSAC now use one owner-managed
+  whole-update-cycle CUDA Graph on NVIDIA CUDA. FlashSAC/WarpSAC compile that
+  graph with architecture-portable Inductor max autotuning. The legacy NVIDIA
+  opt-out and loss-graph fallback were removed; incompatible options fail
+  closed instead of silently selecting the slower path. ROCm/HIP, MPS, CPU, and
+  other compatibility devices retain their existing eager or Inductor paths.
+
 ### Fixed
 
 - TensorBoard scalar writes are now batched into a single event record per

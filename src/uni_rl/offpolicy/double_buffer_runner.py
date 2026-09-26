@@ -1256,10 +1256,8 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                         Callable[..., object] | None,
                         getattr(learner, "update_cycle", None),
                     )
-                    if (
-                        update_cycle is not None
-                        and bool(getattr(learner, "use_update_cycle", False))
-                        and trace_recorder is None
+                    if update_cycle is not None and bool(
+                        getattr(learner, "use_update_cycle", False)
                     ):
                         update_cycle(
                             large_batch,

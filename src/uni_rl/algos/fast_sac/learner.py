@@ -21,7 +21,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from uni_rl.algos.common.compile import get_torch_compile_for_cuda
+from uni_rl.algos.common.compile import get_torch_compile_for_cuda, is_hip_runtime
 from uni_rl.algos.common.learner_boilerplate import (
     LearnerBoilerplateMixin,
     fused_adam_supported,
@@ -440,9 +440,13 @@ class FastSACLearner(LearnerBoilerplateMixin):
         self.max_grad_norm = max_grad_norm
         self.use_autotune = use_autotune
         self.use_amp = bool(use_amp) and self._device_type in ("cuda", "xpu")
-        self.use_compile = (
-            bool(use_compile) and get_torch_compile_for_cuda(self.device, warn=True) is not None
-        )
+        self._nvidia_cuda = self._device_type == "cuda" and not is_hip_runtime()
+        compile_fn = get_torch_compile_for_cuda(self.device, warn=not self._nvidia_cuda)
+        if self._nvidia_cuda and compile_fn is None:
+            raise RuntimeError("FastSAC requires CUDA Inductor/Triton on NVIDIA CUDA")
+        # NVIDIA CUDA always uses the performance path; the legacy opt-out is
+        # retained only for ROCm/HIP, MPS, CPU, and other compatibility devices.
+        self.use_compile = self._nvidia_cuda or (bool(use_compile) and compile_fn is not None)
         # The compiled CUDA Graph hot path cannot branch on host-visible finite
         # checks and relies on the existing NaN guard/metrics boundary.  MPS
         # has no device-side skip mechanism (its fused AdamW kernel ignores
@@ -563,19 +567,16 @@ class FastSACLearner(LearnerBoilerplateMixin):
         self._update_cycle_graph_cache_key: tuple[object, ...] | None = None
         self._update_cycle_static_batch: Dict[str, torch.Tensor] | None = None
         self._update_cycle_graph_metric_values: torch.Tensor | None = None
-        # The full-cycle scope is deliberately conservative: it is the steady-state
-        # CUDA shape used by the production fast_sac owner configs. Dynamic
-        # gradient collectives, fp16 GradScaler state, observation normalization,
-        # and profiling ranges continue through the established update methods.
-        self._compile_full_update_cycle = bool(
-            self.use_compile
-            and self._device_type == "cuda"
-            and self.scaler is None
-            and isinstance(self.obs_normalizer, nn.Identity)
-            and not self.nvtx_profile_ranges
-        )
-        self._eager_critic_loss_tensors = self._critic_loss_tensors
-        self._eager_actor_loss_tensors = self._actor_loss_tensors
+        self._compile_full_update_cycle = bool(self.use_compile and self._nvidia_cuda)
+        if self._compile_full_update_cycle and self.scaler is not None:
+            raise ValueError(
+                "FastSAC CUDA compile mode requires bf16 (or fp32); "
+                "fp16 GradScaler is incompatible with the whole-cycle graph"
+            )
+        if self._compile_full_update_cycle and not isinstance(self.obs_normalizer, nn.Identity):
+            raise ValueError("FastSAC whole-cycle CUDA graphs do not yet support obs normalization")
+        if self._compile_full_update_cycle and self.nvtx_profile_ranges:
+            raise ValueError("FastSAC whole-cycle CUDA graphs do not support NVTX ranges")
         if self.use_compile:
             if self._compile_full_update_cycle:
                 self._materialize_capturable_optimizer_state()
@@ -583,16 +584,13 @@ class FastSACLearner(LearnerBoilerplateMixin):
 
     @property
     def use_update_cycle(self) -> bool:
-        """Whether the whole-cycle graph learner entrypoint is currently safe."""
-        return bool(self._compile_full_update_cycle and self._gradient_sync is None)
+        """Whether this learner owns the whole-cycle update orchestration."""
+        return self._compile_full_update_cycle
 
     def set_gradient_sync(self, sync: Callable[[Iterable[torch.Tensor]], None] | None) -> None:
-        """Attach DP gradient reduction and permanently leave the whole-cycle graph."""
+        """Attach the compatibility-device DP reduction."""
         if sync is not None and self._compile_full_update_cycle:
-            self._compile_full_update_cycle = False
-            self._reset_update_cycle_graph()
-            if self.use_compile:
-                self._compile_training_methods()
+            raise RuntimeError("FastSAC NVIDIA CUDA whole-cycle mode does not support DP fallback")
         self._gradient_sync = sync
 
     def normalize_obs(self, obs: torch.Tensor, update: bool = False) -> torch.Tensor:
@@ -605,43 +603,6 @@ class FastSACLearner(LearnerBoilerplateMixin):
             return cast(torch.Tensor, normalizer(obs, update=False))
         return cast(torch.Tensor, normalizer(obs, update=False))
 
-    @contextmanager
-    def _optimizer_finite_gate(
-        self,
-        optimizer: optim.Optimizer,
-        loss: torch.Tensor,
-    ) -> Iterator[None]:
-        """Skip a fused CUDA optimizer step on non-finite values without a host sync."""
-        if self._host_finite_checks or self._device_type != "cuda":
-            yield
-            return
-        found_inf = self._optimizer_found_inf
-        found_inf.copy_(torch.logical_not(torch.isfinite(loss.detach()).all()))
-        # A non-finite gradient from one rank propagates through the preceding
-        # all-reduce even when another rank's local loss is finite.  Preserve
-        # the lean single-GPU path while making the DP gate inspect the
-        # synchronized gradients on device.
-        if self._gradient_sync is not None:
-            gradients = [
-                parameter.grad
-                for group in optimizer.param_groups
-                for parameter in group["params"]
-                if parameter.grad is not None
-            ]
-            if gradients:
-                torch._amp_foreach_non_finite_check_and_unscale_(
-                    gradients,
-                    found_inf,
-                    self._optimizer_grad_scale,
-                )
-        setattr(optimizer, "grad_scale", self._optimizer_grad_scale)
-        setattr(optimizer, "found_inf", found_inf)
-        try:
-            yield
-        finally:
-            delattr(optimizer, "grad_scale")
-            delattr(optimizer, "found_inf")
-
     def _arm_optimizer_finite_gate(
         self,
         optimizer: optim.Optimizer,
@@ -649,11 +610,10 @@ class FastSACLearner(LearnerBoilerplateMixin):
     ) -> None:
         """Arm a persistent, graph-safe fused-optimizer finite gate.
 
-        Unlike :meth:`_optimizer_finite_gate`, this helper has no context-manager
-        enter/exit protocol and keeps the gate tensors attached to the optimizer.
-        Fused CUDA AdamW only reads those attributes while stepping, so sharing
-        one device scalar across optimizers is safe as long as it is re-armed
-        immediately before each step.
+        The gate tensors stay attached to the optimizer. Fused CUDA AdamW only
+        reads those attributes while stepping, so sharing one device scalar
+        across optimizers is safe as long as it is re-armed immediately before
+        each step.
         """
         if self._host_finite_checks or self._device_type != "cuda":
             return
@@ -693,11 +653,11 @@ class FastSACLearner(LearnerBoilerplateMixin):
             },
         }
         self.__dict__["_critic_loss_tensors"] = compile_fn(
-            self._eager_critic_loss_tensors,
+            self._critic_loss_tensors,
             **compile_kwargs,
         )
         self.__dict__["_actor_loss_tensors"] = compile_fn(
-            self._eager_actor_loss_tensors,
+            self._actor_loss_tensors,
             **compile_kwargs,
         )
 
@@ -747,18 +707,6 @@ class FastSACLearner(LearnerBoilerplateMixin):
         ]
         if gradients:
             torch._foreach_zero_(gradients)
-
-    @contextmanager
-    def _critic_parameters_frozen(self) -> Iterator[None]:
-        """Keep critic weights out of actor autograd without splitting its compiled graph."""
-        states = [(parameter, parameter.requires_grad) for parameter in self.qnet.parameters()]
-        for parameter, _ in states:
-            parameter.requires_grad_(False)
-        try:
-            yield
-        finally:
-            for parameter, requires_grad in states:
-                parameter.requires_grad_(requires_grad)
 
     def _get_actions_and_log_probs_for_critic(
         self,
