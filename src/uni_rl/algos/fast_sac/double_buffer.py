@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -41,6 +42,13 @@ def build_sac_double_buffer_runner(
     actor_adapter_modules = resolve_actor_adapter_modules(rl_cfg, custom_runtime)
     import_actor_adapter_modules(actor_adapter_modules)
 
+    if "inference_request_timeout_sec" in cfg.training:
+        warnings.warn(
+            "training.inference_request_timeout_sec is deprecated and ignored; "
+            "remove it from owner YAML.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     env = env_factory(1, env_cfg_override)
     try:
         action_shape = env.action_space.shape
@@ -119,8 +127,10 @@ def build_sac_double_buffer_runner(
         torch_thread_runtime=torch_thread_runtime,
         collector_cpu_ids=collector_cpu_ids,
         dp_sync=dp_sync,
+        learner_prepare_hook=(
+            custom_runtime.learner_prepare_hook if custom_runtime is not None else None
+        ),
         backend_device_binder=backend_device_binder,
-        inference_request_timeout_sec=cfg.training.inference_request_timeout_sec,
         actor_adapter_modules=actor_adapter_modules,
         log_interval=int(cfg.training.log_interval),
     )

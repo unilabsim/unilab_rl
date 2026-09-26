@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from importlib import import_module
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from uni_rl.offpolicy.warmup import OffPolicyWarmupContext
 
 
 @dataclass(frozen=True)
@@ -19,6 +24,7 @@ class OffPolicyRuntime:
     algo_type: str | None = None
     actor_kwargs: dict[str, Any] = field(default_factory=dict)
     actor_adapter_modules: tuple[str, ...] = ()
+    learner_prepare_hook: Callable[[Any, OffPolicyWarmupContext], None] | None = None
 
     def build_model_kwargs(self, *, obs_dim: int, critic_obs_dim: int) -> dict[str, Any]:
         """Build learner model kwargs from the environment observation contract."""

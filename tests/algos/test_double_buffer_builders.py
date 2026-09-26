@@ -57,7 +57,6 @@ def _training_cfg() -> dict[str, Any]:
         "trace_output_dir": "logs",
         "trace_thread_time": False,
         "trace_cuda_events": False,
-        "inference_request_timeout_sec": 17.0,
         "log_interval": 3,
     }
 
@@ -162,7 +161,6 @@ def test_sac_builder_forwards_backend_device_binder(
     )
 
     assert runner.kwargs["backend_device_binder"] is (_binder if with_binder else None)
-    assert runner.kwargs["inference_request_timeout_sec"] == 17.0
     assert runner.kwargs["log_interval"] == 3
 
 
@@ -191,6 +189,34 @@ def test_flashsac_builder_forwards_backend_device_binder(
     )
 
     assert runner.kwargs["backend_device_binder"] is (_binder if with_binder else None)
-    assert runner.kwargs["inference_request_timeout_sec"] == 17.0
     assert runner.kwargs["log_interval"] == 3
     assert _FakeLearner.last_kwargs["compile_full_objectives"] is True
+
+
+def test_sac_builder_forwards_custom_runtime_preparation_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import uni_rl.algos.fast_sac.double_buffer as module
+    from uni_rl.offpolicy.runtime import OffPolicyRuntime
+
+    def prepare_hook(learner, context):
+        del learner, context
+
+    runtime = OffPolicyRuntime(learner_cls=_FakeLearner, learner_prepare_hook=prepare_hook)
+    monkeypatch.setattr(module, "FastSACLearner", _FakeLearner)
+    monkeypatch.setattr(module, "DoubleBufferOffPolicyRunner", _FakeRunner)
+    monkeypatch.setattr(module, "resolve_custom_offpolicy_runtime", lambda rl_cfg: runtime)
+
+    with pytest.warns(DeprecationWarning, match="inference_request_timeout_sec is deprecated"):
+        cfg = _sac_cfg()
+        cfg.training.inference_request_timeout_sec = 17.0
+        runner = module.build_sac_double_buffer_runner(
+            cfg,
+            env_factory=_fake_env_factory,
+            env_cfg_override=None,
+            replay_prefetch_mode="one_tick",
+            device="cpu",
+        )
+
+    assert runner.kwargs["learner_prepare_hook"] is prepare_hook
+    assert "inference_request_timeout_sec" not in runner.kwargs

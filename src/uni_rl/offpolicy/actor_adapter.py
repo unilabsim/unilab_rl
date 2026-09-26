@@ -42,6 +42,10 @@ class OffPolicyActorAdapter:
         actor_context_from_obs: ``(obs_device, obs_dim) -> context | None``
             hook that slices the packed learner-side inference observation into
             the actor's extra context (e.g. the privileged tail).
+        warmup_actions: optional no-side-effect representative inference hook.
+            It has the same signature as ``sample_actions`` and is preferred
+            during learner preparation. If omitted, the runtime uses
+            ``sample_actions`` and restores CPU/CUDA/Python RNG state afterward.
     """
 
     algo_type: str
@@ -53,6 +57,9 @@ class OffPolicyActorAdapter:
         None
     )
     actor_context_from_obs: Callable[[torch.Tensor, int], torch.Tensor | None] | None = None
+    warmup_actions: (
+        Callable[[Any, torch.Tensor, torch.Tensor, torch.Tensor | None], torch.Tensor] | None
+    ) = None
 
 
 _ADAPTERS: dict[str, OffPolicyActorAdapter] = {}

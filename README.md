@@ -98,6 +98,21 @@ The breaking canonical TensorBoard/W&B field contract and the historical
 old-to-new migration table are documented in
 [`docs/metrics.md`](docs/metrics.md).
 
+## Off-policy cold-path preparation
+
+The double-buffer runner performs learner-owned warmup after DP initialization
+and before starting the collector. Implement
+`prepare_for_collection(context: OffPolicyWarmupContext)` on a custom learner
+for compilation, graph capture, and other cold paths. Preparation must leave
+weights, optimizers, schedulers, RNG state, and counters unchanged; compiler and
+graph caches are the only sanctioned retained effects. A custom FastSAC runtime
+may instead provide `OffPolicyRuntime.learner_prepare_hook`, and actor adapters
+may provide `warmup_actions`.
+
+Coordination failures use learner phase/progress and process liveness rather
+than a wall-clock performance SLA. `training.inference_request_timeout_sec` is
+deprecated and ignored; remove it from owner YAML during migration.
+
 ## Design contract
 
 `uni_rl` does **not** depend on any simulator or environment library.

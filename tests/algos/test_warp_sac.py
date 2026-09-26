@@ -208,7 +208,6 @@ def test_warpsac_builder_uses_regime_aware_replay_factory(
                 "trace_output_dir": "logs",
                 "trace_thread_time": False,
                 "trace_cuda_events": False,
-                "inference_request_timeout_sec": 17.0,
                 "log_interval": 2,
             },
             "algo": {

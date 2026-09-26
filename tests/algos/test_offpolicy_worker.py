@@ -141,6 +141,96 @@ def test_inference_response_wait_timeout_is_explicit() -> None:
         _wait_for_inference_tick(queue.Queue(), 0, threading.Event(), timeout=0.01)
 
 
+def test_inference_response_wait_allows_healthy_busy_learner_beyond_deadline() -> None:
+    from uni_rl.offpolicy.coordination import LearnerCoordinationState
+
+    state = LearnerCoordinationState()
+    state.mark_busy()
+    response_queue: queue.Queue[int] = queue.Queue()
+    threading.Timer(0.04, response_queue.put, args=(0,)).start()
+
+    assert _wait_for_inference_tick(
+        response_queue,
+        0,
+        threading.Event(),
+        learner_coordination=state,
+        learner_pid=None,
+        timeout=0.01,
+    )
+
+
+def test_inference_response_wait_detects_stopped_or_dead_learner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uni_rl.offpolicy.coordination import LearnerCoordinationState
+
+    stopped = LearnerCoordinationState()
+    stopped.mark_stopped()
+    with pytest.raises(RuntimeError, match="Learner stopped before inference tick 0"):
+        _wait_for_inference_tick(
+            queue.Queue(),
+            0,
+            threading.Event(),
+            learner_coordination=stopped,
+            learner_pid=None,
+            timeout=0.01,
+        )
+
+    alive_phase = LearnerCoordinationState()
+    alive_phase.mark_busy()
+    monkeypatch.setattr(worker_module, "learner_pid_is_alive", lambda pid: False)
+    with pytest.raises(RuntimeError, match="Learner process died before inference tick 0"):
+        _wait_for_inference_tick(
+            queue.Queue(),
+            0,
+            threading.Event(),
+            learner_coordination=alive_phase,
+            learner_pid=12345,
+            timeout=0.01,
+        )
+
+
+def test_inference_response_wait_uses_waiting_progress_not_latency() -> None:
+    from uni_rl.offpolicy.coordination import LearnerCoordinationState
+
+    state = LearnerCoordinationState()
+    state.mark_waiting()
+    response_queue: queue.Queue[int] = queue.Queue()
+
+    def progress_then_publish() -> None:
+        state.mark_progress()
+        response_queue.put(0)
+
+    threading.Timer(0.02, progress_then_publish).start()
+
+    assert _wait_for_inference_tick(
+        response_queue,
+        0,
+        threading.Event(),
+        learner_coordination=state,
+        learner_pid=None,
+        timeout=0.01,
+    )
+
+
+def test_learner_stop_releases_inference_response_wait() -> None:
+    from uni_rl.offpolicy.coordination import LearnerCoordinationState
+
+    state = LearnerCoordinationState()
+    state.mark_busy()
+    stop_event = threading.Event()
+    threading.Timer(0.01, stop_event.set).start()
+
+    assert not _wait_for_inference_tick(
+        queue.Queue(),
+        0,
+        stop_event,
+        learner_coordination=state,
+        learner_pid=None,
+        timeout=10.0,
+    )
+
+
 class _DummyActor:
     def __init__(self) -> None:
         self.calls: list[tuple[torch.Tensor, torch.Tensor, bool]] = []
