@@ -493,3 +493,97 @@ def test_offpolicy_terminal_averages_aggregated_samples_over_two_seconds(
     assert snapshot is not None
     assert snapshot.sample_count == 1
     assert snapshot.metrics["critic_loss"] == pytest.approx(10.0)
+
+
+class _BatchedWriter:
+    """Minimal SummaryWriter stand-in exposing the batched event path."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+        self.scalars: list[tuple[str, float, int]] = []
+
+        class _FileWriter:
+            def __init__(self, sink: list[Any]) -> None:
+                self._sink = sink
+
+            def add_event(self, event: Any) -> None:
+                self._sink.append(event)
+
+        self.file_writer = _FileWriter(self.events)
+
+    def add_scalar(self, tag: str, value: float, step: int) -> None:
+        self.scalars.append((tag, value, step))
+
+
+def _batched_scalar_map(writer: _BatchedWriter) -> dict[str, float]:
+    assert writer.events, "expected at least one batched event"
+    result: dict[str, float] = {}
+    for event in writer.events:
+        for value in event.summary.value:
+            result[value.tag] = value.simple_value
+    return result
+
+
+def test_offpolicy_backend_log_step_writes_one_batched_event() -> None:
+    logger = OffPolicyLogger(log_backend="none", num_gpus=1)
+    writer = _BatchedWriter()
+    logger._tb_writer = writer
+
+    logger.log_step(
+        iteration=1,
+        metrics={"critic_loss": 2.0},
+        reward=1.5,
+        reward_components={"alive": 1.0},
+        train_time=0.2,
+        iteration_time=0.5,
+        extra_info={"steps_per_sec": 400.0, "throughput_steps": 4096},
+    )
+
+    assert len(writer.events) == 1
+    assert writer.scalars == []
+    event = writer.events[0]
+    assert event.step == 1
+    scalars = _batched_scalar_map(writer)
+    assert scalars["train/critic_loss"] == pytest.approx(2.0)
+    assert scalars["reward/mean"] == pytest.approx(1.5)
+    assert scalars["reward/alive"] == pytest.approx(1.0)
+    assert "perf/iter_ms" in scalars
+    assert "timing/learner_train_ms" in scalars
+
+
+def test_offpolicy_backend_log_step_falls_back_to_per_scalar_writes() -> None:
+    class _PlainWriter:
+        def __init__(self) -> None:
+            self.scalars: list[tuple[str, float, int]] = []
+
+        def add_scalar(self, tag: str, value: float, step: int) -> None:
+            self.scalars.append((tag, value, step))
+
+    logger = OffPolicyLogger(log_backend="none", num_gpus=1)
+    writer = _PlainWriter()
+    logger._tb_writer = writer
+
+    logger.log_step(iteration=1, metrics={"critic_loss": 2.0}, train_time=0.2)
+
+    tags = [tag for tag, _, _ in writer.scalars]
+    assert "train/critic_loss" in tags
+    assert "perf/iter_ms" in tags
+
+
+def test_offpolicy_log_interval_gates_backend_but_not_terminal_state() -> None:
+    logger = OffPolicyLogger(log_backend="none", num_gpus=1, max_iterations=10, log_interval=5)
+    writer = _BatchedWriter()
+    logger._tb_writer = writer
+
+    for iteration in range(1, 11):
+        logger.log_step(
+            iteration=iteration,
+            metrics={"critic_loss": float(iteration)},
+            train_time=0.1,
+        )
+
+    logged_steps = [event.step for event in writer.events]
+    assert logged_steps == [5, 10]
+    # Terminal/render state still advances every iteration.
+    assert logger._iteration == 10
+    assert logger._latest_metrics["critic_loss"] == pytest.approx(10.0)

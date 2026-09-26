@@ -953,6 +953,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             num_gpus=(self.dp_sync.world_size if self.dp_sync is not None else 1),
             log_dir=log_dir,
             log_backend=self._logger_backend(logger_type),
+            log_interval=self.log_interval,
         )
         logger.update_runtime_manifest(self.runtime_manifest)
         logger.log_status(format_torch_thread_runtime(self.torch_thread_runtime))
@@ -978,7 +979,9 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         if self.collector_backend_device is not None:
             logger.log_status(f"Collector backend device: {self.collector_backend_device}")
         logger.log_status("Collector actor/inference ownership: none")
-        logger.log_status("Replay learner lightweight: fixed (log_interval=1)")
+        logger.log_status(
+            f"Replay learner lightweight: batched event write (log_interval={self.log_interval})"
+        )
         self._active_logger = logger
         logger.start()
         try:
@@ -1425,7 +1428,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                         "pipeline": "gpu_resident",
                         "replay_h2d_submitter": self.replay_h2d_submitter,
                         "replay_transfer_backend": self.replay_transfer_backend,
-                        "learner_log_interval": 1,
+                        "learner_log_interval": self.log_interval,
                     },
                 )
 

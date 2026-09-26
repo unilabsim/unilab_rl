@@ -128,4 +128,5 @@ def build_flashsac_double_buffer_runner(
         dp_sync=dp_sync,
         backend_device_binder=backend_device_binder,
         inference_request_timeout_sec=cfg.training.inference_request_timeout_sec,
+        log_interval=int(cfg.training.log_interval),
     )

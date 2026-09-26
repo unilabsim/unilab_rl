@@ -187,6 +187,7 @@ class OffPolicyLogger(BaseTrainingLogger):
         wandb_tags: list[str] | None = None,
         wandb_notes: str | None = None,
         timing_profile: str = "sac_family",
+        log_interval: int = 1,
     ):
         super().__init__(
             algo_name=algo_name,
@@ -205,6 +206,7 @@ class OffPolicyLogger(BaseTrainingLogger):
             refresh_per_second=refresh_per_second,
             fixed_terminal_refresh=True,
             tensorboard_subdir=None,
+            log_interval=log_interval,
             wandb_config={
                 "obs_dim": obs_dim,
                 "action_dim": action_dim,
@@ -574,14 +576,15 @@ class OffPolicyLogger(BaseTrainingLogger):
         if reward_components:
             self._latest_reward_components = reward_components
         self._status = "Training"
-        self._backend_log_step(
-            iteration,
-            metrics,
-            reward,
-            reward_metrics,
-            reward_components,
-            train_time,
-        )
+        if self._should_log_backend(iteration):
+            self._backend_log_step(
+                iteration,
+                metrics,
+                reward,
+                reward_metrics,
+                reward_components,
+                train_time,
+            )
         self._record_terminal_sample(
             metrics=metrics,
             reward=reward,
@@ -613,53 +616,58 @@ class OffPolicyLogger(BaseTrainingLogger):
         collector_cycle_ms = self._get_collector_cycle_ms()
 
         if self._tb_writer:
-            writer = self._tb_writer
+            tb_scalars: list[tuple[str, Any]] = []
             if metrics:
                 for key, value in metrics.items():
-                    writer.add_scalar(_metric_backend_key(key), value, global_step)
+                    tb_scalars.append((_metric_backend_key(key), value))
             if reward is not None:
-                writer.add_scalar("reward/mean", reward, global_step)
+                tb_scalars.append(("reward/mean", reward))
             if reward_metrics:
                 for key, value in reward_metrics.items():
-                    writer.add_scalar(_reward_backend_key(key), value, global_step)
+                    tb_scalars.append((_reward_backend_key(key), value))
             if reward_components:
                 for key, value in reward_components.items():
-                    writer.add_scalar(_reward_backend_key(key), value, global_step)
+                    tb_scalars.append((_reward_backend_key(key), value))
             if self._mean_ep_length > 0:
-                writer.add_scalar("episode/length", self._mean_ep_length, global_step)
-            writer.add_scalar("episode/timeout_rate", self._timeout_rate, global_step)
+                tb_scalars.append(("episode/length", self._mean_ep_length))
+            tb_scalars.append(("episode/timeout_rate", self._timeout_rate))
             for key, value_ms in learner_timing_ms.items():
-                writer.add_scalar(key, value_ms, global_step)
+                tb_scalars.append((key, value_ms))
             for key, value in self._collector_timing.items():
-                writer.add_scalar(f"timing/collector_{key}", value, global_step)
+                tb_scalars.append((f"timing/collector_{key}", value))
             if iter_steps_per_sec is not None:
-                writer.add_scalar("perf/steps_per_sec", iter_steps_per_sec, global_step)
+                tb_scalars.append(("perf/steps_per_sec", iter_steps_per_sec))
             if self._collector_active_steps_per_sec is not None:
-                writer.add_scalar(
-                    "perf/collector_active_steps_per_sec",
-                    self._collector_active_steps_per_sec,
-                    global_step,
+                tb_scalars.append(
+                    (
+                        "perf/collector_active_steps_per_sec",
+                        self._collector_active_steps_per_sec,
+                    )
                 )
             if effective_samples_per_sec is not None:
-                writer.add_scalar(
-                    "perf/effective_samples_per_sec",
-                    effective_samples_per_sec,
-                    global_step,
+                tb_scalars.append(
+                    (
+                        "perf/effective_samples_per_sec",
+                        effective_samples_per_sec,
+                    )
                 )
-            writer.add_scalar("perf/iter_ms", iter_wall_time * 1000, global_step)
-            writer.add_scalar("perf/learner_train_pct", self._get_iter_pct(train_time), global_step)
-            writer.add_scalar(
-                "perf/learner_accounted_pct",
-                self._get_iter_pct(learner_accounted_time),
-                global_step,
+            tb_scalars.append(("perf/iter_ms", iter_wall_time * 1000))
+            tb_scalars.append(("perf/learner_train_pct", self._get_iter_pct(train_time)))
+            tb_scalars.append(
+                (
+                    "perf/learner_accounted_pct",
+                    self._get_iter_pct(learner_accounted_time),
+                )
             )
-            writer.add_scalar(
-                "perf/learner_other_pct",
-                self._get_iter_pct(learner_other_time),
-                global_step,
+            tb_scalars.append(
+                (
+                    "perf/learner_other_pct",
+                    self._get_iter_pct(learner_other_time),
+                )
             )
             if collector_cycle_ms is not None:
-                writer.add_scalar("perf/collector_cycle_ms", collector_cycle_ms, global_step)
+                tb_scalars.append(("perf/collector_cycle_ms", collector_cycle_ms))
+            self._write_tb_scalars(tb_scalars, global_step)
 
         if self._wandb_run:
             wandb = _load_wandb()
