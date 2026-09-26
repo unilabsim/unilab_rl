@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-09-27
+
+### Added
+
+- A learner-owned off-policy preparation phase between DP initialization and
+  collector startup. FastSAC, FlashSAC, and WarpSAC warm representative actor
+  inference, replay gather/device paths, and compiled update/CUDA-graph paths
+  before tick 0.
+- Custom learner/runtime/actor warmup hooks: `prepare_for_collection`,
+  `OffPolicyRuntime.learner_prepare_hook`, and
+  `OffPolicyActorAdapter.warmup_actions`.
+- Cross-process learner phase and progress coordination for lock-step
+  collectors.
+
+### Changed
+
+- Off-policy coordination distinguishes busy learners, stopped learners, dead
+  learner PIDs, and stalled waiting loops instead of imposing a fixed response
+  deadline.
+- `training.inference_request_timeout_sec` is deprecated and ignored by the
+  builders; direct runner construction retains the argument only for source
+  compatibility.
+
+### Fixed
+
+- Learner-owned cold work completes before collector startup, removing
+  first-update compilation and graph-capture pressure from the action wait.
+- Learner exceptions and normal completion stop/join collectors, preventing
+  orphaned lock-step collectors.
+- Compatibility-device warmup restores model, optimizer, scheduler, normalizer,
+  counter, finite-gate, deferred-metric, gradient, and RNG state. Compiler and
+  graph caches remain intentionally warm.
+
 ## [1.4.1] - 2026-09-27
 
 ### Added
