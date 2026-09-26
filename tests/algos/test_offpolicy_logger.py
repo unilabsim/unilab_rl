@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -7,7 +8,10 @@ from rich.console import Console
 
 import uni_rl.logging.common as common_logger_module
 import uni_rl.logging.offpolicy as offpolicy_logger_module
+import uni_rl.logging.onpolicy as onpolicy_logger_module
+from uni_rl.logging.common import BaseTrainingLogger
 from uni_rl.logging.offpolicy import OffPolicyLogger
+from uni_rl.logging.onpolicy import OnPolicyLogger
 
 
 def test_offpolicy_logger_only_forces_refresh_for_errors(monkeypatch) -> None:
@@ -38,8 +42,7 @@ def test_offpolicy_logger_only_forces_refresh_for_errors(monkeypatch) -> None:
     refresh_calls.clear()
     logger.log_step(
         iteration=1,
-        metrics={"loss/q": 0.5},
-        reward=1.0,
+        metrics={"Loss/critic": 0.5},
         extra_info={"throughput_steps": 8},
     )
     logger.log_status("Training")
@@ -166,17 +169,13 @@ def test_offpolicy_logger_displays_env_step_breakdown_as_indented_children() -> 
     assert len(set(connector_columns)) == 1
 
 
-def test_offpolicy_logger_discards_retired_collector_timing_names() -> None:
+def test_offpolicy_logger_rejects_retired_collector_timing_names() -> None:
     logger = OffPolicyLogger(log_backend="none")
 
-    logger.update_collector_timing(
-        {
-            "learner_action_wait_ms": 4.0,
-            "sync_idle_ms": 3.0,
-        }
-    )
+    with pytest.raises(ValueError, match="unregistered collector timing keys: sync_idle_ms"):
+        logger.update_collector_timing({"learner_action_wait_ms": 4.0, "sync_idle_ms": 3.0})
 
-    assert logger._collector_timing == {"learner_action_wait_ms": 4.0}
+    assert logger._collector_timing == {}
 
 
 def test_offpolicy_logger_waits_for_complete_collector_cycle_before_percentages() -> None:
@@ -223,7 +222,7 @@ def test_offpolicy_logger_shows_complete_additive_learner_timeline() -> None:
         "Collector Release",
         "Replay Batch Wait",
         "Replay Sample",
-        "Train",
+        "Learning",
         "Other",
         "Iter Wall",
     ]
@@ -260,7 +259,6 @@ def test_offpolicy_logger_does_not_fold_parallel_h2d_into_accounted_time() -> No
     )
 
     assert logger._get_learner_accounted_time() == pytest.approx(0.90)
-    assert logger._get_iter_pct(logger._get_learner_accounted_time()) == pytest.approx(90.0)
     assert "Replay H2D Submit" not in list(logger._build_timing_table().columns[0].cells)
 
 
@@ -286,7 +284,7 @@ def test_offpolicy_logger_appo_profile_only_shows_applicable_learner_phases() ->
         "Collector Wait",
         "Replay Stage",
         "Replay Sample",
-        "Train",
+        "Learning",
         "Weight Publish",
         "Other",
         "Iter Wall",
@@ -430,12 +428,12 @@ def test_offpolicy_terminal_averages_aggregated_samples_over_two_seconds(
     )
     logger.log_step(
         iteration=1,
-        metrics={"critic_loss": 2.0},
+        metrics={"Loss/critic": 2.0},
         train_time=0.2,
         iteration_time=0.5,
         extra_info={
-            "steps_per_sec": 400.0,
-            "learner_samples_per_sec": 1_000.0,
+            "env_steps_per_sec": 400.0,
+            "learner_replay_rows_per_sec": 1_000.0,
         },
     )
 
@@ -451,23 +449,23 @@ def test_offpolicy_terminal_averages_aggregated_samples_over_two_seconds(
     )
     logger.log_step(
         iteration=2,
-        metrics={"critic_loss": 4.0},
+        metrics={"Loss/critic": 4.0},
         train_time=0.4,
         iteration_time=1.0,
         extra_info={
-            "steps_per_sec": 800.0,
-            "learner_samples_per_sec": 3_000.0,
+            "env_steps_per_sec": 800.0,
+            "learner_replay_rows_per_sec": 3_000.0,
         },
     )
 
     snapshot = logger._terminal_snapshot
     assert snapshot is not None
     assert snapshot.sample_count == 2
-    assert snapshot.metrics["critic_loss"] == pytest.approx(3.0)
+    assert snapshot.metrics["Loss/critic"] == pytest.approx(3.0)
     assert snapshot.scalars["_train_time"] == pytest.approx(0.3)
     assert snapshot.scalars["timeout_rate"] == pytest.approx(0.3)
-    assert snapshot.scalars["steps_per_sec"] == pytest.approx(600.0)
-    assert snapshot.scalars["samples_per_sec"] == pytest.approx(2_000.0)
+    assert snapshot.scalars["env_steps_per_sec"] == pytest.approx(600.0)
+    assert snapshot.scalars["learner_replay_rows_per_sec"] == pytest.approx(2_000.0)
     assert snapshot.collector_timing["env_step_ms"] == pytest.approx(4.0)
     collector_values = list(logger._build_timing_table().columns[3].cells)
     assert "    4.0ms   29%" in collector_values
@@ -475,24 +473,24 @@ def test_offpolicy_terminal_averages_aggregated_samples_over_two_seconds(
     assert "GPUs 2" in logger._build_display().title.plain
 
     latest_backend_values = {tag: value for tag, value, _ in writer.scalars}
-    assert latest_backend_values["train/critic_loss"] == pytest.approx(4.0)
-    assert latest_backend_values["perf/steps_per_sec"] == pytest.approx(800.0)
+    assert latest_backend_values["Loss/critic"] == pytest.approx(4.0)
+    assert latest_backend_values["Perf/total_fps"] == pytest.approx(800.0)
 
     now = 103.1
     logger.log_step(
         iteration=3,
-        metrics={"critic_loss": 10.0},
+        metrics={"Loss/critic": 10.0},
         train_time=1.0,
         iteration_time=2.0,
         extra_info={
-            "steps_per_sec": 1_200.0,
-            "learner_samples_per_sec": 5_000.0,
+            "env_steps_per_sec": 1_200.0,
+            "learner_replay_rows_per_sec": 5_000.0,
         },
     )
     snapshot = logger._terminal_snapshot
     assert snapshot is not None
     assert snapshot.sample_count == 1
-    assert snapshot.metrics["critic_loss"] == pytest.approx(10.0)
+    assert snapshot.metrics["Loss/critic"] == pytest.approx(10.0)
 
 
 class _BatchedWriter:
@@ -519,6 +517,8 @@ def _batched_scalar_map(writer: _BatchedWriter) -> dict[str, float]:
     assert writer.events, "expected at least one batched event"
     result: dict[str, float] = {}
     for event in writer.events:
+        tags = [value.tag for value in event.summary.value]
+        assert len(tags) == len(set(tags)), f"duplicate backend tags: {tags}"
         for value in event.summary.value:
             result[value.tag] = value.simple_value
     return result
@@ -531,12 +531,12 @@ def test_offpolicy_backend_log_step_writes_one_batched_event() -> None:
 
     logger.log_step(
         iteration=1,
-        metrics={"critic_loss": 2.0},
-        reward=1.5,
+        metrics={"Loss/critic": 2.0},
+        return_mean_ep100=1.25,
         reward_components={"alive": 1.0},
         train_time=0.2,
         iteration_time=0.5,
-        extra_info={"steps_per_sec": 400.0, "throughput_steps": 4096},
+        extra_info={"env_steps_per_sec": 400.0, "throughput_steps": 4096},
     )
 
     assert len(writer.events) == 1
@@ -544,11 +544,40 @@ def test_offpolicy_backend_log_step_writes_one_batched_event() -> None:
     event = writer.events[0]
     assert event.step == 1
     scalars = _batched_scalar_map(writer)
-    assert scalars["train/critic_loss"] == pytest.approx(2.0)
-    assert scalars["reward/mean"] == pytest.approx(1.5)
+    assert scalars["Loss/critic"] == pytest.approx(2.0)
+    assert scalars["Train/mean_reward"] == pytest.approx(1.25)
     assert scalars["reward/alive"] == pytest.approx(1.0)
-    assert "perf/iter_ms" in scalars
-    assert "timing/learner_train_ms" in scalars
+    assert scalars["Perf/total_fps"] == pytest.approx(400.0)
+    assert "Perf/iteration_time" in scalars
+    assert "Perf/learning_time" in scalars
+    assert "perf/learner_train_pct" not in scalars
+    assert "perf/collector_cycle_ms" not in scalars
+
+
+def test_offpolicy_source_episode_return_owner_fails_closed() -> None:
+    logger = OffPolicyLogger(log_backend="none", max_iterations=10, log_interval=5)
+
+    with pytest.raises(ValueError, match="logger-owned metrics"):
+        logger.log_step(
+            iteration=1,
+            metrics={"Train/mean_reward": 1.0},
+            return_mean_ep100=2.0,
+        )
+
+
+def test_offpolicy_runner_iteration_collision_fails_closed() -> None:
+    logger = OffPolicyLogger(log_backend="none")
+    logger.log_collector(total_steps=16, buffer_size=8)
+
+    with pytest.raises(ValueError, match="OffPolicyLogger owns Train/iteration"):
+        logger.log_step(iteration=1, metrics={"Train/iteration": 1.0})
+
+
+def test_offpolicy_fallback_axis_iteration_collision_fails_closed() -> None:
+    logger = OffPolicyLogger(log_backend="none")
+
+    with pytest.raises(ValueError, match="OffPolicyLogger owns Train/iteration"):
+        logger.log_step(iteration=1, metrics={"Train/iteration": 1.0})
 
 
 def test_offpolicy_backend_log_step_falls_back_to_per_scalar_writes() -> None:
@@ -563,11 +592,11 @@ def test_offpolicy_backend_log_step_falls_back_to_per_scalar_writes() -> None:
     writer = _PlainWriter()
     logger._tb_writer = writer
 
-    logger.log_step(iteration=1, metrics={"critic_loss": 2.0}, train_time=0.2)
+    logger.log_step(iteration=1, metrics={"Loss/critic": 2.0}, train_time=0.2)
 
     tags = [tag for tag, _, _ in writer.scalars]
-    assert "train/critic_loss" in tags
-    assert "perf/iter_ms" in tags
+    assert "Loss/critic" in tags
+    assert "Perf/iteration_time" not in tags
 
 
 def test_offpolicy_log_interval_gates_backend_but_not_terminal_state() -> None:
@@ -578,7 +607,7 @@ def test_offpolicy_log_interval_gates_backend_but_not_terminal_state() -> None:
     for iteration in range(1, 11):
         logger.log_step(
             iteration=iteration,
-            metrics={"critic_loss": float(iteration)},
+            metrics={"Loss/critic": float(iteration)},
             train_time=0.1,
         )
 
@@ -586,4 +615,238 @@ def test_offpolicy_log_interval_gates_backend_but_not_terminal_state() -> None:
     assert logged_steps == [5, 10]
     # Terminal/render state still advances every iteration.
     assert logger._iteration == 10
-    assert logger._latest_metrics["critic_loss"] == pytest.approx(10.0)
+    assert logger._latest_metrics["Loss/critic"] == pytest.approx(10.0)
+
+
+def test_offpolicy_final_iteration_logs_when_interval_is_not_divisible() -> None:
+    logger = OffPolicyLogger(log_backend="none", max_iterations=9, log_interval=4)
+    writer = _BatchedWriter()
+    logger._tb_writer = writer
+
+    for iteration in range(1, 10):
+        logger.log_step(iteration=iteration, metrics={"Loss/critic": float(iteration)})
+
+    assert [event.step for event in writer.events] == [4, 8, 9]
+
+
+def test_onpolicy_final_iteration_logs_when_interval_is_not_divisible() -> None:
+    logger = OnPolicyLogger(
+        log_backend="none", num_envs=1, num_steps=1, max_iterations=9, log_interval=4
+    )
+    writer = _BatchedWriter()
+    logger._tb_writer = writer
+
+    for iteration in range(10):
+        logger.log_step(iteration=iteration, metrics={"Loss/surrogate": float(iteration)})
+
+    assert [event.step for event in writer.events] == [0, 4, 8, 9]
+
+
+def test_offpolicy_source_contract_fails_even_when_backend_write_is_skipped() -> None:
+    logger = OffPolicyLogger(log_backend="none", max_iterations=10, log_interval=5)
+
+    with pytest.raises(ValueError, match="unregistered canonical training metric"):
+        logger.log_step(iteration=1, metrics={"train/actor_loss": 1.0})
+    with pytest.raises(ValueError, match="reserved reward component name"):
+        logger.log_step(iteration=1, reward_components={"mean": 1.0})
+
+
+@pytest.mark.parametrize(
+    ("logger_factory", "tag"),
+    [
+        (lambda: OffPolicyLogger(log_backend="none"), "Train/mean_reward"),
+        (lambda: OffPolicyLogger(log_backend="none"), "Train/mean_episode_length"),
+        (lambda: OffPolicyLogger(log_backend="none"), "Episode/timeout_rate"),
+        (lambda: OffPolicyLogger(log_backend="none"), "Perf/collection_time"),
+        (
+            lambda: OnPolicyLogger(log_backend="none", num_envs=1, num_steps=1),
+            "Train/mean_episode_length",
+        ),
+    ],
+)
+def test_source_metrics_cannot_bypass_logger_owned_telemetry(
+    logger_factory: Callable[[], BaseTrainingLogger], tag: str
+) -> None:
+    logger = logger_factory()
+
+    with pytest.raises(ValueError, match="logger-owned metrics"):
+        logger.log_step(iteration=1, metrics={tag: 1.0})
+
+
+def test_onpolicy_source_contract_fails_even_when_backend_write_is_skipped() -> None:
+    logger = OnPolicyLogger(log_backend="none", max_iterations=10, log_interval=5)
+
+    with pytest.raises(ValueError, match="unregistered canonical training metric"):
+        logger.log_step(iteration=1, metrics={"train/actor_loss": 1.0})
+    with pytest.raises(ValueError, match="reserved reward component name"):
+        logger.log_step(iteration=1, reward_components={"mean": 1.0})
+
+
+def test_offpolicy_backend_step_axis_prefers_collector_env_steps() -> None:
+    logger = OffPolicyLogger(log_backend="none")
+    writer = _BatchedWriter()
+    logger._tb_writer = writer
+
+    logger.log_collector(total_steps=128, buffer_size=64)
+    logger.log_collector(total_steps=256, buffer_size=64)
+    logger.log_step(iteration=3, metrics={"Loss/critic": 1.0}, train_time=0.1)
+
+    assert writer.events[0].step == 256
+    assert _batched_scalar_map(writer)["Train/iteration"] == pytest.approx(3.0)
+
+
+def test_offpolicy_collector_counters_do_not_update_reward_history() -> None:
+    logger = OffPolicyLogger(log_backend="none")
+
+    logger.log_collector(total_steps=16, buffer_size=8)
+
+    assert not logger._reward_history
+
+
+def test_offpolicy_backend_step_axis_falls_back_to_iteration() -> None:
+    logger = OffPolicyLogger(log_backend="none")
+    writer = _BatchedWriter()
+    logger._tb_writer = writer
+
+    logger.log_step(iteration=7, metrics={"Loss/critic": 1.0}, train_time=0.1)
+
+    assert writer.events[0].step == 7
+    backend_scalars = _batched_scalar_map(writer)
+    assert "Train/iteration" not in backend_scalars
+    assert "Perf/iteration_time" not in backend_scalars
+    assert "Episode/timeout_rate" not in backend_scalars
+
+    logger.update_timeout_rate(0.25)
+    logger.log_step(iteration=8, metrics={"Loss/critic": 1.5}, train_time=0.1)
+
+    assert _batched_scalar_map(writer)["Episode/timeout_rate"] == pytest.approx(0.25)
+
+
+def test_offpolicy_collection_time_waits_for_complete_rollout_measurement() -> None:
+    logger = OffPolicyLogger(log_backend="none")
+    writer = _BatchedWriter()
+    logger._tb_writer = writer
+
+    logger.update_collector_timing({"env_step_ms": 2.0})
+    logger.log_step(iteration=1, metrics={"Loss/critic": 1.0})
+    assert "Perf/collection_time" not in _batched_scalar_map(writer)
+
+    logger.update_collector_timing({"rollout_ms": 100.0})
+    logger.log_step(iteration=2, metrics={"Loss/critic": 2.0})
+    assert _batched_scalar_map(writer)["Perf/collection_time"] == pytest.approx(0.1)
+
+
+def test_tensorboard_and_wandb_use_the_same_canonical_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logger = OffPolicyLogger(log_backend="none")
+    writer = _BatchedWriter()
+    logger._tb_writer = writer
+    logger._wandb_run = object()
+
+    wandb_calls: list[dict[str, Any]] = []
+
+    class _FakeWandb:
+        @staticmethod
+        def log(payload: dict[str, Any], *, step: int) -> None:
+            wandb_calls.append({"payload": payload, "step": step})
+
+    monkeypatch.setattr(offpolicy_logger_module, "_load_wandb", lambda: _FakeWandb)
+
+    logger.log_step(
+        iteration=4,
+        metrics={"Loss/actor": 2.0},
+        return_mean_ep100=2.5,
+        reward_components={"alive": 0.5},
+        train_time=0.1,
+    )
+
+    assert len(writer.events) == 1
+    assert len(wandb_calls) == 1
+    assert writer.events[0].step == wandb_calls[0]["step"] == 4
+    wandb_payload = wandb_calls[0]["payload"]
+    tb_payload = _batched_scalar_map(writer)
+    assert set(wandb_payload) == set(tb_payload)
+    for key, value in wandb_payload.items():
+        assert value == pytest.approx(tb_payload[key])
+    assert wandb_calls[0]["payload"]["Loss/actor"] == pytest.approx(2.0)
+
+
+def test_onpolicy_tensorboard_and_wandb_use_the_same_canonical_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logger = OnPolicyLogger(log_backend="none", num_envs=10, num_steps=3)
+    writer = _BatchedWriter()
+    logger._tb_writer = writer
+    logger._wandb_run = object()
+
+    wandb_calls: list[dict[str, Any]] = []
+
+    class _FakeWandb:
+        @staticmethod
+        def log(payload: dict[str, Any], *, step: int) -> None:
+            wandb_calls.append({"payload": payload, "step": step})
+
+    monkeypatch.setattr(onpolicy_logger_module, "_load_wandb", lambda: _FakeWandb)
+
+    logger.log_step(
+        iteration=4,
+        metrics={"Loss/surrogate": 2.0},
+        return_mean_ep100=2.5,
+        reward_components={"alive": 0.5},
+        collect_time=0.1,
+        train_time=0.2,
+    )
+
+    assert len(writer.events) == len(wandb_calls) == 1
+    assert writer.events[0].step == wandb_calls[0]["step"] == 4
+    tb_payload = _batched_scalar_map(writer)
+    wandb_payload = wandb_calls[0]["payload"]
+    assert set(wandb_payload) == set(tb_payload)
+    for key, value in wandb_payload.items():
+        assert value == pytest.approx(tb_payload[key])
+
+
+def test_onpolicy_backend_uses_canonical_reward_and_loss_tags() -> None:
+    logger = OnPolicyLogger(log_backend="none", num_envs=10, num_steps=3)
+    writer = _BatchedWriter()
+    logger._tb_writer = writer
+
+    logger.log_step(
+        iteration=2,
+        metrics={"Loss/surrogate": 1.0},
+        return_mean_ep100=2.0,
+        reward_components={"alive": 0.5},
+        collect_time=0.1,
+        train_time=0.2,
+    )
+
+    assert len(writer.events) == 1
+    assert writer.events[0].step == 2
+    scalars = _batched_scalar_map(writer)
+    assert scalars["Loss/surrogate"] == pytest.approx(1.0)
+    assert scalars["Train/mean_reward"] == pytest.approx(2.0)
+    assert scalars["reward/alive"] == pytest.approx(0.5)
+    assert scalars["Perf/total_fps"] == pytest.approx(100.0)
+    assert scalars["Perf/collection_time"] == pytest.approx(0.1)
+    assert scalars["Perf/learning_time"] == pytest.approx(0.2)
+    assert "Train/iteration" not in scalars
+    assert "Perf/iteration_time" not in scalars
+
+
+def test_onpolicy_source_episode_return_owner_fails_closed() -> None:
+    logger = OnPolicyLogger(log_backend="none")
+
+    with pytest.raises(ValueError, match="logger-owned metrics"):
+        logger.log_step(
+            iteration=1,
+            metrics={"Train/mean_reward": 1.0},
+            return_mean_ep100=2.0,
+        )
+
+
+def test_onpolicy_runner_iteration_metric_fails_closed() -> None:
+    logger = OnPolicyLogger(log_backend="none")
+
+    with pytest.raises(ValueError, match="iteration as the step axis"):
+        logger.log_step(iteration=1, metrics={"Train/iteration": 1.0})

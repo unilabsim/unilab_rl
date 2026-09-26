@@ -627,13 +627,21 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         self.critic.normalize_parameters()
 
         if not read_metrics:
+            critic_tensors = (critic_loss,)
+            if self.reward_normalizer is not None:
+                critic_tensors = (*critic_tensors, reward_scale_std)
             self._pending_cycle_critic_metric_values = torch.stack(
-                [tensor.detach().reshape(()) for tensor in (critic_loss, reward_scale_std)]
+                [tensor.detach().reshape(()) for tensor in critic_tensors]
             )
             return {}
+        metric_names: tuple[str, ...] = ("Loss/critic",)
+        metric_tensors: tuple[torch.Tensor, ...] = (critic_loss,)
+        if self.reward_normalizer is not None:
+            metric_names = (*metric_names, "Train/reward_scale_std")
+            metric_tensors = (*metric_tensors, reward_scale_std)
         return self._read_metric_tensors(
-            ("critic_loss", "reward_scale_std"),
-            (critic_loss, reward_scale_std),
+            metric_names,
+            metric_tensors,
         )
 
     def update_actor(
@@ -688,7 +696,8 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         if not self._capture_update_cycle:
             self.temperature_scheduler.step()
 
-        actor_metric_tensors = (actor_loss, entropy, temp_value, temp_loss)
+        post_update_temperature = self.temperature()
+        actor_metric_tensors = (actor_loss, entropy, post_update_temperature, temp_loss)
         if not read_metrics:
             # Keep a private device-side snapshot.  The cycle-end drain below
             # performs the only D2H read, after all compiled replays finish.
@@ -697,7 +706,12 @@ class FlashSACLearner(LearnerBoilerplateMixin):
             )
             return {}
         return self._read_metric_tensors(
-            ("actor_loss", "actor_entropy", "temperature", "temperature_loss"),
+            (
+                "Loss/actor",
+                "Loss/entropy",
+                "Policy/temperature",
+                "Loss/temperature",
+            ),
             actor_metric_tensors,
         )
 
@@ -717,7 +731,12 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         return {
             name: float(value)
             for name, value in zip(
-                ("actor_loss", "actor_entropy", "temperature", "temperature_loss"),
+                (
+                    "Loss/actor",
+                    "Loss/entropy",
+                    "Policy/temperature",
+                    "Loss/temperature",
+                ),
                 values.cpu().tolist(),
                 strict=True,
             )
@@ -725,19 +744,22 @@ class FlashSACLearner(LearnerBoilerplateMixin):
 
     def read_deferred_cycle_metrics(self) -> dict[str, float]:
         values = self._pending_cycle_metric_values
-        has_actor = values is not None and values.numel() == 6
+        critic_metric_count = 2 if self.reward_normalizer is not None else 1
+        has_actor = values is not None and values.numel() == critic_metric_count + 4
         self._pending_cycle_critic_metric_values = None
         self._pending_actor_metric_values = None
         self._pending_cycle_metric_values = None
         if values is None:
             return {}
-        metric_names: tuple[str, ...] = ("critic_loss", "reward_scale_std")
+        metric_names: tuple[str, ...] = ("Loss/critic",)
+        if self.reward_normalizer is not None:
+            metric_names = (*metric_names, "Train/reward_scale_std")
         if has_actor:
             metric_names = metric_names + (
-                "actor_loss",
-                "actor_entropy",
-                "temperature",
-                "temperature_loss",
+                "Loss/actor",
+                "Loss/entropy",
+                "Policy/temperature",
+                "Loss/temperature",
             )
         return {
             name: float(value)

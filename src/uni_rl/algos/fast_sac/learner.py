@@ -782,7 +782,7 @@ class FastSACLearner(LearnerBoilerplateMixin):
         obs: torch.Tensor,
         critic_obs: torch.Tensor,
         action_eps: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         with self._autocast():
             actions, log_probs, log_std = self._get_actions_and_log_probs_for_actor(
                 obs,
@@ -791,7 +791,6 @@ class FastSACLearner(LearnerBoilerplateMixin):
             )
 
         with torch.no_grad():
-            action_std = log_std.exp().mean()
             policy_entropy = -log_probs.mean()
 
         with self._autocast():
@@ -801,7 +800,7 @@ class FastSACLearner(LearnerBoilerplateMixin):
             qf_value = q_values.mean(dim=0)
             actor_loss = (self.log_alpha.exp().detach() * log_probs - qf_value).mean()
 
-        return actor_loss, policy_entropy, action_std
+        return actor_loss, policy_entropy
 
     @staticmethod
     def _read_metric_tensors(
@@ -817,7 +816,11 @@ class FastSACLearner(LearnerBoilerplateMixin):
         values = self._pending_actor_metric_values
         self._pending_actor_metric_values = None
         if values is not None:
-            names = ("actor_loss", "actor_grad_norm", "policy_entropy", "action_std")
+            names = (
+                "Loss/actor",
+                "Train/actor_gradient_norm",
+                "Loss/entropy",
+            )
             return {
                 name: float(value) for name, value in zip(names, values.cpu().tolist(), strict=True)
             }
@@ -825,26 +828,25 @@ class FastSACLearner(LearnerBoilerplateMixin):
 
     def read_deferred_cycle_metrics(self) -> Dict[str, float]:
         values = self._pending_cycle_metric_values
-        has_actor = values is not None and values.numel() == 10
+        has_actor = values is not None and values.numel() == 9
         self._pending_cycle_critic_metric_values = None
         self._pending_actor_metric_values = None
         self._pending_cycle_metric_values = None
         if values is None:
             return {}
         metric_names: tuple[str, ...] = (
-            "qf_loss",
-            "critic_grad_norm",
-            "target_q_max",
-            "target_q_min",
-            "alpha_loss",
-            "alpha",
+            "Loss/critic",
+            "Train/critic_gradient_norm",
+            "Train/target_q_max",
+            "Train/target_q_min",
+            "Loss/temperature",
+            "Policy/temperature",
         )
         if has_actor:
             metric_names = metric_names + (
-                "actor_loss",
-                "actor_grad_norm",
-                "policy_entropy",
-                "action_std",
+                "Loss/actor",
+                "Train/actor_gradient_norm",
+                "Loss/entropy",
             )
         return {
             name: float(value)
@@ -1136,12 +1138,12 @@ class FastSACLearner(LearnerBoilerplateMixin):
             return {}
         return self._read_metric_tensors(
             (
-                "qf_loss",
-                "critic_grad_norm",
-                "target_q_max",
-                "target_q_min",
-                "alpha_loss",
-                "alpha",
+                "Loss/critic",
+                "Train/critic_gradient_norm",
+                "Train/target_q_max",
+                "Train/target_q_min",
+                "Loss/temperature",
+                "Policy/temperature",
             ),
             (
                 qf_loss,
@@ -1166,7 +1168,7 @@ class FastSACLearner(LearnerBoilerplateMixin):
         obs = self.normalize_obs(obs, update=False)
         self._pending_actor_metric_values = None
         with _cuda_nvtx_range("actor/loss_compiled", self.nvtx_profile_ranges):
-            actor_loss, policy_entropy, action_std = self._actor_loss_tensors(obs, critic_obs)
+            actor_loss, policy_entropy = self._actor_loss_tensors(obs, critic_obs)
 
         # Skip if NaN
         if self._finite_check_ok(actor_loss, read_metrics):
@@ -1207,18 +1209,21 @@ class FastSACLearner(LearnerBoilerplateMixin):
             actor_loss,
             actor_grad_norm,
             policy_entropy,
-            action_std,
         )
         if not read_metrics:
             # Inductor CUDA Graph Trees overwrite their output storage on a
-            # later compiled call.  Stage the four scalars now so they remain
+            # later compiled call.  Stage the three scalars now so they remain
             # valid until the single cycle-end D2H read.
             self._pending_actor_metric_values = torch.stack(
                 [tensor.detach().reshape(()) for tensor in actor_metric_tensors]
             )
             return {}
         return self._read_metric_tensors(
-            ("actor_loss", "actor_grad_norm", "policy_entropy", "action_std"),
+            (
+                "Loss/actor",
+                "Train/actor_gradient_norm",
+                "Loss/entropy",
+            ),
             actor_metric_tensors,
         )
 

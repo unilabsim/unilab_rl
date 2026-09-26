@@ -22,7 +22,7 @@ from uni_rl.algos.appo.worker import appo_collector_fn
 from uni_rl.env_contract import EnvFactory
 from uni_rl.ipc import AsyncRunner, RolloutRingBuffer, SharedWeightSync
 from uni_rl.logging import OffPolicyLogger
-from uni_rl.logging.metrics_drain import drain_collector_metrics
+from uni_rl.logging.metrics_drain import RewardComponentWindow, drain_collector_metrics
 from uni_rl.utils.nan_guard import NanGuardCfg
 from uni_rl.utils.observations import get_obs_dims
 from uni_rl.utils.seed import apply_training_seed, derive_worker_seed
@@ -311,7 +311,7 @@ class APPORunner(AsyncRunner):
         # rolling 100-episode mean, so a short window keeps the logged
         # reward timely without losing smoothing.
         reward_history: deque = deque(maxlen=10)
-        latest_reward_components: dict = {}
+        latest_reward_components = RewardComponentWindow()
 
         staging_pool = RolloutStagingPool(
             capacity=self.staging_pool_size,
@@ -386,24 +386,20 @@ class APPORunner(AsyncRunner):
             weight_sync_time = time.perf_counter() - weight_sync_start
             iteration_time = time.perf_counter() - iteration_start
 
-            metrics["staging_pool_len"] = float(staging_pool.active_count)
-            metrics["staging_pool_capacity"] = float(staging_pool.capacity)
-            metrics["available_on_arrive"] = float(available_on_arrive)
-            metrics["rollouts_read"] = float(num_new)
+            metrics["Train/ring_available_slots"] = float(available_on_arrive)
+            metrics["Train/rollouts_read"] = float(num_new)
 
-            logger.update_staging_pool(staging_pool.active_count, staging_pool.capacity)
-
-            mean_reward = (
+            mean_return_reports10 = (
                 sum(reward_history) / max(len(reward_history), 1) if reward_history else 0.0
             )
-            last_mean_reward = float(mean_reward)
+            last_mean_reward = float(mean_return_reports10)
             best_mean_reward = max(best_mean_reward, last_mean_reward)
 
             logger.log_step(
                 iteration=iteration,
                 metrics=metrics,
-                reward=mean_reward,
-                reward_components=latest_reward_components,
+                return_mean_ep100=(float(reward_history[-1]) if reward_history else None),
+                reward_components=latest_reward_components.take(),
                 train_time=train_time,
                 collector_wait_time=wait_time,
                 learner_replay_sample_time=learner_replay_sample_time,
@@ -412,7 +408,6 @@ class APPORunner(AsyncRunner):
                 iteration_time=iteration_time,
                 extra_info={
                     "throughput_steps": num_new * env_steps_per_sync,
-                    "collector_active_steps_per_sec": logger._collector_active_steps_per_sec,
                 },
             )
 
@@ -440,7 +435,12 @@ class APPORunner(AsyncRunner):
     # _check_collector_alive() inherited from AsyncRunner base class
 
     @staticmethod
-    def _drain_metrics(queue, reward_history, reward_components, logger):
+    def _drain_metrics(
+        queue,
+        reward_history,
+        reward_components: RewardComponentWindow,
+        logger,
+    ):
         """Drain all pending messages from the collector metrics queue.
 
         Shares the dispatch with OffPolicyRunner via

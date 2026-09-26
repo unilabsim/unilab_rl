@@ -13,6 +13,7 @@ from uni_rl.algos.fast_sac.learner import (
     FastSACLearner,
     SACActor,
 )
+from uni_rl.logging.metric_schema import normalize_metric_map
 
 
 def _small_fast_sac_learner(*, use_autotune: bool = True) -> FastSACLearner:
@@ -42,6 +43,29 @@ def _small_offpolicy_batch(batch_size: int = 4) -> dict[str, torch.Tensor]:
         "dones": torch.tensor([0.0, 1.0, 0.0, 1.0]),
         "truncated": torch.tensor([0.0, 1.0, 0.0, 0.0]),
     }
+
+
+def test_fast_sac_metric_source_keys_are_canonical() -> None:
+    learner = _small_fast_sac_learner()
+    batch = _small_offpolicy_batch()
+
+    critic_metrics = learner.update_critic(batch)
+    actor_metrics = learner.update_actor(batch)
+
+    assert set(critic_metrics) == {
+        "Loss/critic",
+        "Train/critic_gradient_norm",
+        "Train/target_q_max",
+        "Train/target_q_min",
+        "Loss/temperature",
+        "Policy/temperature",
+    }
+    assert set(actor_metrics) == {
+        "Loss/actor",
+        "Train/actor_gradient_norm",
+        "Loss/entropy",
+    }
+    normalize_metric_map({**critic_metrics, **actor_metrics})
 
 
 def test_fast_sac_compile_targets_training_hot_paths(monkeypatch) -> None:
@@ -480,16 +504,15 @@ def test_fast_sac_update_cycle_defers_metrics_until_one_read() -> None:
     metrics = learner.read_deferred_cycle_metrics()
 
     assert set(metrics) == {
-        "qf_loss",
-        "critic_grad_norm",
-        "target_q_max",
-        "target_q_min",
-        "alpha_loss",
-        "alpha",
-        "actor_loss",
-        "actor_grad_norm",
-        "policy_entropy",
-        "action_std",
+        "Loss/critic",
+        "Train/critic_gradient_norm",
+        "Train/target_q_max",
+        "Train/target_q_min",
+        "Loss/temperature",
+        "Policy/temperature",
+        "Loss/actor",
+        "Train/actor_gradient_norm",
+        "Loss/entropy",
     }
     assert all(math.isfinite(value) for value in metrics.values())
     assert learner.read_deferred_cycle_metrics() == {}
@@ -513,19 +536,20 @@ def test_fast_sac_update_cycle_raw_graph_replays_with_stable_inputs_and_metrics(
         use_compile=True,
     )
     torch.manual_seed(123)
-    monkeypatch.setattr(torch.version, "hip", "simulated-rocm", raising=False)
-    eager_learner = FastSACLearner(
-        obs_dim=4,
-        action_dim=2,
-        critic_obs_dim=5,
-        device="cuda:0",
-        actor_hidden_dim=16,
-        critic_hidden_dim=16,
-        num_atoms=5,
-        num_q_networks=2,
-        use_layer_norm=False,
-        use_compile=False,
-    )
+    with monkeypatch.context() as hip_runtime:
+        hip_runtime.setattr(torch.version, "hip", "simulated-rocm", raising=False)
+        eager_learner = FastSACLearner(
+            obs_dim=4,
+            action_dim=2,
+            critic_obs_dim=5,
+            device="cuda:0",
+            actor_hidden_dim=16,
+            critic_hidden_dim=16,
+            num_atoms=5,
+            num_q_networks=2,
+            use_layer_norm=False,
+            use_compile=False,
+        )
     batch = {
         "obs": torch.randn(16, 4, device="cuda:0"),
         "critic": torch.randn(16, 5, device="cuda:0"),
