@@ -135,6 +135,7 @@ class OffPolicyRunner(AsyncRunner):
         nan_guard_cfg: NanGuardCfg | None = None,
         torch_thread_runtime: dict[str, Any] | None = None,
         actor_adapter_modules: Iterable[str] | None = None,
+        log_interval: int = 1,
     ):
         if int(env_steps_per_sync) < 1:
             raise ValueError("Off-policy env_steps_per_sync must be >= 1")
@@ -172,6 +173,7 @@ class OffPolicyRunner(AsyncRunner):
         self.trace_cuda_events = trace_cuda_events
         self.nan_guard_cfg = nan_guard_cfg
         self.torch_thread_runtime = torch_thread_runtime
+        self.log_interval = max(1, int(log_interval))
         # Dotted modules whose import registers custom off-policy actor
         # adapters. Imported here (learner process) and forwarded to the
         # spawn collector, which re-imports them at startup.

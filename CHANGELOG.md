@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `log_interval` backend-logging throttle on `BaseTrainingLogger`,
+  `OffPolicyLogger`, `OnPolicyLogger`, `OffPolicyRunner`, and `APPORunner`
+  (all default 1). The off-policy builders (`fast_sac`, `flash_sac`,
+  `warp_sac`) read it from `cfg.training.log_interval`. Terminal rendering is
+  unaffected; only TensorBoard/wandb writes are gated, and the final iteration
+  is always logged.
+
+### Fixed
+
+- TensorBoard scalar writes are now batched into a single event record per
+  training step. Previously each `add_scalar` call produced one record, and
+  the writer thread's per-record open/write/close saturated the async queue
+  (depth 10), blocking the learner main thread for ~160 ms per iteration when
+  the log directory lives on a network filesystem (FUSE). Falls back to
+  per-scalar writes when the batched path is unavailable.
+
 ## [1.4.0] - 2026-09-25
 
 ### Added

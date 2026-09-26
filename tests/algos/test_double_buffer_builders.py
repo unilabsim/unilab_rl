@@ -58,6 +58,7 @@ def _training_cfg() -> dict[str, Any]:
         "trace_thread_time": False,
         "trace_cuda_events": False,
         "inference_request_timeout_sec": 17.0,
+        "log_interval": 3,
     }
 
 
@@ -162,6 +163,7 @@ def test_sac_builder_forwards_backend_device_binder(
 
     assert runner.kwargs["backend_device_binder"] is (_binder if with_binder else None)
     assert runner.kwargs["inference_request_timeout_sec"] == 17.0
+    assert runner.kwargs["log_interval"] == 3
 
 
 @pytest.mark.parametrize("with_binder", [False, True])
@@ -190,4 +192,5 @@ def test_flashsac_builder_forwards_backend_device_binder(
 
     assert runner.kwargs["backend_device_binder"] is (_binder if with_binder else None)
     assert runner.kwargs["inference_request_timeout_sec"] == 17.0
+    assert runner.kwargs["log_interval"] == 3
     assert _FakeLearner.last_kwargs["compile_full_objectives"] is True

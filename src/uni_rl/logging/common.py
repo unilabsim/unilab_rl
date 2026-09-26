@@ -56,6 +56,18 @@ def _load_wandb() -> Any | None:
         return None
 
 
+def _tb_proto_modules() -> tuple[Any, Any]:
+    """Import tensorboard's protobuf modules as ``Any``.
+
+    The generated modules define their messages through reflection, which
+    static checkers cannot see; returning them as ``Any`` keeps attribute
+    access clean without per-line suppressions.
+    """
+    from tensorboard.compat.proto import event_pb2, summary_pb2
+
+    return event_pb2, summary_pb2
+
+
 class BaseTrainingLogger:
     """Shared lifecycle and backend logging setup for rich training loggers."""
 
@@ -79,6 +91,7 @@ class BaseTrainingLogger:
         fixed_terminal_refresh: bool = False,
         tensorboard_subdir: str | None = "tb",
         wandb_config: dict[str, Any] | None = None,
+        log_interval: int = 1,
     ):
         self.algo_name = algo_name
         self.max_iterations = max_iterations
@@ -87,6 +100,7 @@ class BaseTrainingLogger:
 
         self._no_print = log_backend.lower() == "no_print"
         self._log_backend = "none" if self._no_print else log_backend.lower()
+        self._log_interval = max(1, int(log_interval))
 
         self._unicode_console = _console_supports_unicode()
         self._console = Console(force_terminal=False if not self._unicode_console else None)
@@ -292,6 +306,46 @@ class BaseTrainingLogger:
 
     def log_save(self, path: str):
         self._last_save = path
+
+    def _should_log_backend(self, iteration: int) -> bool:
+        """Return True when backend (TensorBoard/wandb) writes are due.
+
+        Terminal rendering reads in-memory snapshots and is unaffected; this
+        gate only throttles backend I/O. The final iteration is always logged.
+        """
+        if self._log_interval <= 1:
+            return True
+        return iteration % self._log_interval == 0 or iteration >= self.max_iterations
+
+    def _write_tb_scalars(self, scalars: list[tuple[str, Any]], global_step: int) -> None:
+        """Write one training step's scalars as a single event record.
+
+        Per-scalar ``add_scalar`` costs the writer thread one open/write/close
+        per record, which saturates the async queue (depth 10) and blocks the
+        training thread on network filesystems. Batching keeps it to one
+        record per step. Falls back to per-scalar writes if the batched path
+        is unavailable.
+        """
+        writer = self._tb_writer
+        if writer is None or not scalars:
+            return
+        try:
+            event_pb2, summary_pb2 = _tb_proto_modules()
+
+            event = event_pb2.Event(
+                wall_time=time.time(),
+                step=global_step,
+                summary=summary_pb2.Summary(
+                    value=[
+                        summary_pb2.Summary.Value(tag=tag, simple_value=float(value))
+                        for tag, value in scalars
+                    ]
+                ),
+            )
+            writer.file_writer.add_event(event)
+        except (ImportError, AttributeError, TypeError, ValueError):
+            for tag, value in scalars:
+                writer.add_scalar(tag, value, global_step)
 
     def _refresh(self, *, force: bool = False):
         if self._live is None:

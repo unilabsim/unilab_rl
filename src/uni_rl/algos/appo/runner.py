@@ -64,6 +64,7 @@ class APPORunner(AsyncRunner):
         seed: int | None = None,
         resume_path: str | None = None,
         nan_guard_cfg: NanGuardCfg | None = None,
+        log_interval: int = 1,
     ):
         super().__init__(
             env_name=env_name,
@@ -81,6 +82,7 @@ class APPORunner(AsyncRunner):
         self.seed = seed
         self.resume_path = resume_path
         self.nan_guard_cfg = nan_guard_cfg
+        self.log_interval = max(1, int(log_interval))
         self.env_factory = env_factory
         if self.staging_pool_size < 1:
             raise ValueError("APPO staging pool size must be >= 1")
@@ -296,6 +298,7 @@ class APPORunner(AsyncRunner):
             log_dir=log_dir,
             log_backend=logger_type,
             timing_profile="appo",
+            log_interval=self.log_interval,
         )
         logger.log_status(
             f"Waiting for first rollout... "

@@ -30,6 +30,7 @@ class OnPolicyLogger(BaseTrainingLogger):
         wandb_job_type: str | None = None,
         wandb_tags: list[str] | None = None,
         wandb_notes: str | None = None,
+        log_interval: int = 1,
     ):
         super().__init__(
             algo_name=algo_name,
@@ -46,6 +47,7 @@ class OnPolicyLogger(BaseTrainingLogger):
             wandb_tags=wandb_tags,
             wandb_notes=wandb_notes,
             tensorboard_subdir="tb",
+            log_interval=log_interval,
         )
         self.num_steps = num_steps
 
@@ -76,7 +78,8 @@ class OnPolicyLogger(BaseTrainingLogger):
             self._latest_reward_components = reward_components
 
         self._refresh()
-        self._backend_log_step(iteration, metrics, reward, reward_components)
+        if self._should_log_backend(iteration):
+            self._backend_log_step(iteration, metrics, reward, reward_components)
 
     def _backend_log_step(
         self,
@@ -86,19 +89,20 @@ class OnPolicyLogger(BaseTrainingLogger):
         reward_components: dict[str, float] | None,
     ):
         if self._tb_writer:
-            w = self._tb_writer
+            tb_scalars: list[tuple[str, Any]] = []
             if metrics:
                 for k, v in metrics.items():
-                    w.add_scalar(f"train/{k}", v, iteration)
+                    tb_scalars.append((f"train/{k}", v))
             if reward is not None:
-                w.add_scalar("reward/mean", reward, iteration)
+                tb_scalars.append(("reward/mean", reward))
             if reward_components:
                 for k, v in reward_components.items():
-                    w.add_scalar(f"reward/{k}", v, iteration)
+                    tb_scalars.append((f"reward/{k}", v))
             if self._mean_ep_length > 0:
-                w.add_scalar("episode/length", self._mean_ep_length, iteration)
-            w.add_scalar("perf/collect_time_ms", self._collect_time * 1000, iteration)
-            w.add_scalar("perf/train_time_ms", self._train_time * 1000, iteration)
+                tb_scalars.append(("episode/length", self._mean_ep_length))
+            tb_scalars.append(("perf/collect_time_ms", self._collect_time * 1000))
+            tb_scalars.append(("perf/train_time_ms", self._train_time * 1000))
+            self._write_tb_scalars(tb_scalars, iteration)
 
         if self._wandb_run:
             wandb = _load_wandb()
