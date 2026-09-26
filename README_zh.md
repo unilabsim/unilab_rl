@@ -84,6 +84,9 @@ env contract 是一个最小化的、基于 numpy 的自动 reset 向量化环�
 docstring；如何不 fork 本仓库、通过 `runtime_resolver` 接入自定义算法，
 见 [`AGENTS.md`](AGENTS.md) 的「新算法扩展方式」一节。
 
+破坏性变更后的 TensorBoard/W&B canonical 字段契约与历史新旧 tag 迁移表见
+[`docs/metrics.md`](docs/metrics.md)。
+
 ## 设计契约
 
 `uni_rl` **不**依赖任何仿真器或环境库。算法行为归属 `uni_rl.algos.*`

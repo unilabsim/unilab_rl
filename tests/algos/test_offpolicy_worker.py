@@ -13,7 +13,6 @@ from uni_rl.offpolicy.worker import (
     _publish_collector_ready,
     _publish_inference_tick,
     _wait_for_inference_tick,
-    compute_collector_active_steps_per_sec,
     resolve_offpolicy_actor_priv_info,
     sample_offpolicy_actions,
 )
@@ -157,21 +156,6 @@ class _DummyActor:
         return torch.ones(obs.shape[0], 3, dtype=obs.dtype)
 
 
-def test_compute_collector_active_steps_per_sec_includes_active_phases_only() -> None:
-    steps_per_sec = compute_collector_active_steps_per_sec(
-        {
-            "inference_request_ms": 1.0,
-            "learner_action_wait_ms": 100.0,
-            "env_step_ms": 10.0,
-            "replay_write_ms": 3.0,
-            "bookkeeping_ms": 100.0,
-        },
-        num_envs=32,
-    )
-
-    assert steps_per_sec == pytest.approx(32 / 0.014)
-
-
 def test_extract_env_step_breakdown_timing_ms_maps_env_owned_keys_only() -> None:
     timing = extract_env_step_breakdown_timing_ms(
         {
@@ -189,16 +173,6 @@ def test_extract_env_step_breakdown_timing_ms_maps_env_owned_keys_only() -> None
         "env_step_update_state_ms": 2.5,
         "env_step_reset_done_ms": 0.25,
     }
-
-
-def test_compute_collector_active_steps_per_sec_returns_none_without_active_time() -> None:
-    assert (
-        compute_collector_active_steps_per_sec(
-            {"bookkeeping_ms": 100.0},
-            num_envs=32,
-        )
-        is None
-    )
 
 
 @pytest.mark.parametrize("algo_type", ["sac", "flashsac"])

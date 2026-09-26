@@ -16,6 +16,7 @@ import uni_rl.offpolicy.double_buffer_runner as device_runner_module
 import uni_rl.offpolicy.runner as runner_module
 from uni_rl.ipc.async_runner import AsyncRunner
 from uni_rl.ipc.inference_slot import SharedInferenceSlot
+from uni_rl.logging.metric_schema import normalize_metric_map
 from uni_rl.offpolicy.double_buffer_runner import (
     _LearnerInferenceScheduler,
     algo_display_name,
@@ -141,8 +142,7 @@ def test_sample_info_reports_replay_rows_and_effective_samples():
     ) == {
         "batch_size_per_rank": 4,
         "effective_batch_size": 4,
-        "replay_samples_per_iter": 12,
-        "learner_samples_per_iter": 12,
+        "learner_replay_rows_per_iter": 12,
     }
 
 
@@ -249,13 +249,15 @@ class _FakePipeline:
 
 
 class _FakeLogger:
+    last_instance: "_FakeLogger | None" = None
     _total_steps = 0
     _mean_ep_length = 0.0
-    _collector_active_steps_per_sec = None
 
     def __init__(self, **kwargs):
         del kwargs
         self.statuses = []
+        self.step_calls: list[dict] = []
+        type(self).last_instance = self
 
     def set_collection_sync(self, *args):
         del args
@@ -279,7 +281,7 @@ class _FakeLogger:
         del value
 
     def log_step(self, **kwargs):
-        del kwargs
+        self.step_calls.append(kwargs)
 
     def log_save(self, path):
         del path
@@ -293,10 +295,10 @@ class _FakeLogger:
     def close(self):
         return None
 
-    def _get_iter_steps_per_sec(self):
+    def _get_iter_env_steps_per_sec(self):
         return None
 
-    def _get_effective_samples_per_sec(self):
+    def _get_learner_replay_rows_per_sec(self):
         return None
 
     def _get_iter_wall_time(self):
@@ -554,15 +556,20 @@ def test_runner_releases_action_before_replay_wait_and_sample(
             events.append("replay_after_tick")
 
     class LoopLearner(_Learner):
-        def update_critic(self, batch):
+        supports_deferred_update_metrics = True
+
+        def update_critic(self, batch, *, read_metrics: bool = True):
             del batch
             events.append("update_critic")
-            return {}
+            return {"Loss/critic": 7.0} if read_metrics else {}
 
-        def update_actor(self, batch):
+        def update_actor(self, batch, *, read_metrics: bool = True):
             del batch
             events.append("update_actor")
             return {}
+
+        def read_deferred_actor_metrics(self):
+            return {"Loss/actor": 3.0}
 
         def soft_update_target(self):
             events.append("soft_update_target")
@@ -604,6 +611,15 @@ def test_runner_releases_action_before_replay_wait_and_sample(
     assert events.index("inference_response") < events.index("replay_sample")
     assert events.index("inference_response") < events.index("update_critic")
     assert "soft_update_target" in events
+
+    logger = _FakeLogger.last_instance
+    assert logger is not None
+    log_step = logger.step_calls[0]
+    assert "checkpoint_return_mean_reports10" not in log_step
+    deferred_metrics = log_step["metrics"]
+    normalize_metric_map(deferred_metrics)
+    assert deferred_metrics["Loss/critic"] == pytest.approx(7.0)
+    assert deferred_metrics["Loss/actor"] == pytest.approx(3.0)
 
 
 def test_runtime_manifest_reports_inductor_cuda_graph_path(
@@ -836,3 +852,74 @@ def test_adapter_learner_inference_uses_actor_context(
 
     torch.testing.assert_close(torch.from_numpy(actual), expected)
     assert policy_version == 10
+
+
+def test_dp_metric_reduction_follows_the_metric_schema() -> None:
+    class _FakeDpSync:
+        def __init__(self) -> None:
+            self.mean: dict[str, float] | None = None
+            self.total: dict[str, float] | None = None
+
+        def allreduce_statistics(self, *, mean, total):
+            self.mean = dict(mean)
+            self.total = dict(total)
+            return {
+                "metric::Loss/critic": 4.0,
+                "metric::Train/rollouts_read": 6.0,
+                "checkpoint::return_reports10": 5.0,
+                **{key: value for key, value in mean.items() if key.startswith("timing::")},
+                "logger::total_steps": 128.0,
+                "logger::buffer_size": 64.0,
+                "logger::buffer_target": 128.0,
+                "logger::timeout_rate": 0.0,
+                "logger::buffer_utilization": 0.5,
+                "extra::batch_size_per_rank": 8.0,
+                "extra::effective_batch_size": 8.0,
+                "extra::throughput_steps": 128.0,
+                "extra::learner_replay_rows_per_iter": 16.0,
+            }
+
+    runner = object.__new__(device_runner_module.DoubleBufferOffPolicyRunner)
+    dp_sync = _FakeDpSync()
+    runner.dp_sync = dp_sync
+    logger = SimpleNamespace(
+        _total_steps=64,
+        _buffer_size=32,
+        _buffer_target=64,
+        _mean_ep_length=0.0,
+        _timeout_rate=0.0,
+        _buffer_utilization=0.5,
+        _collector_timing={},
+    )
+
+    payload = runner._aggregate_log_statistics(
+        logger,
+        metrics={"Loss/critic": 4.0, "Train/rollouts_read": 3.0},
+        checkpoint_return_mean_reports10=2.0,
+        return_mean_ep100=None,
+        reward_components={},
+        train_time=0.1,
+        collector_wait_time=0.0,
+        replay_batch_wait_time=0.0,
+        learner_replay_sample_time=0.0,
+        sync_coordination_time=0.0,
+        replay_ingress_h2d_submit_time=0.0,
+        inference_h2d_time=0.0,
+        inference_forward_time=0.0,
+        inference_d2h_time=0.0,
+        inference_time=0.0,
+        iteration_time=1.0,
+        extra_info={
+            "throughput_steps": 64,
+            "batch_size_per_rank": 8,
+            "effective_batch_size": 8,
+            "learner_replay_rows_per_iter": 8,
+        },
+    )
+
+    assert dp_sync.mean is not None and dp_sync.total is not None
+    assert "metric::Loss/critic" in dp_sync.mean
+    assert "metric::Train/rollouts_read" not in dp_sync.mean
+    assert dp_sync.total["metric::Train/rollouts_read"] == 3.0
+    assert payload["metrics"]["Train/rollouts_read"] == pytest.approx(6.0)
+    assert payload["checkpoint_return_mean_reports10"] == pytest.approx(5.0)

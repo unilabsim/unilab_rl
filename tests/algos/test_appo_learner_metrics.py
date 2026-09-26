@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 import torch.nn as nn
 
 from uni_rl.algos.appo.learner import APPOLearner
+from uni_rl.logging.metric_schema import normalize_metric_map
 
 
 class _Actor(nn.Module):
@@ -15,6 +18,9 @@ class _Actor(nn.Module):
         self.output_mean = torch.zeros(1, action_dim)
         self.output_std = torch.ones(1, action_dim)
         self.output_entropy = torch.tensor(0.0)
+        self.distribution = SimpleNamespace(std_type="scalar", std_param=self.log_std)
+        self.mlp = self.linear
+        self.obs_normalizer = lambda obs: obs
 
     def forward(self, obs, stochastic_output: bool = False):
         del stochastic_output
@@ -54,6 +60,8 @@ class _Critic(nn.Module):
     def __init__(self, obs_dim: int) -> None:
         super().__init__()
         self.linear = nn.Linear(obs_dim, 1)
+        self.mlp = self.linear
+        self.obs_normalizer = lambda obs: obs
 
     def forward(self, obs):
         return self.linear(obs["policy"])
@@ -95,3 +103,40 @@ def test_appo_process_batch_syncs_target_actor_normalization_buffers():
         )
 
     assert float(kl.mean().item()) == pytest.approx(0.0, abs=5e-5)
+
+
+def test_appo_update_emits_only_registered_canonical_metrics():
+    torch.manual_seed(17)
+    learner = APPOLearner(
+        actor=_Actor(obs_dim=3, action_dim=2),
+        critic=_Critic(obs_dim=3),
+        num_learning_epochs=1,
+        num_mini_batches=2,
+        device="cpu",
+    )
+    batch = learner.process_batch(
+        {
+            "observations": torch.randn(4, 3, 3),
+            "actions": torch.randn(4, 3, 2),
+            "actions_log_prob": torch.randn(4, 3),
+            "rewards": torch.randn(4, 3),
+            "dones": torch.zeros(4, 3),
+            "last_obs": torch.randn(3, 3),
+        }
+    )
+
+    metrics = learner.update(batch)
+    assert set(metrics) == {
+        "Loss/surrogate",
+        "Loss/value",
+        "Loss/entropy",
+        "PPO/approx_kl",
+        "PPO/clip_fraction",
+        "Train/global_gradient_norm",
+        "Loss/learning_rate",
+        "Policy/mean_std",
+        "PPO/behavior_to_current_log_prob_delta",
+        "PPO/vtrace_rho_clip_fraction",
+        "PPO/vtrace_rho_p99",
+    }
+    normalize_metric_map(metrics)

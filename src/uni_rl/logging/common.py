@@ -301,7 +301,7 @@ class BaseTrainingLogger:
         self._closed = True
         self._finished = True
 
-    def update_ep_length(self, length: float):
+    def update_mean_episode_length(self, length: float):
         self._mean_ep_length = length
 
     def log_save(self, path: str):

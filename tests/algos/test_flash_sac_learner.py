@@ -10,6 +10,7 @@ import torch
 
 from uni_rl.algos.flash_sac.learner import FlashSACLearner, RewardNormalizer
 from uni_rl.algos.flash_sac.update import compute_categorical_td_target
+from uni_rl.logging.metric_schema import normalize_metric_map
 
 
 def _make_batch(batch_size: int = 32) -> dict[str, torch.Tensor]:
@@ -217,17 +218,39 @@ def test_flashsac_export_module_matches_deterministic_policy():
 
 
 def test_flashsac_update_steps_run_on_cpu():
+    torch.manual_seed(17)
     learner = FlashSACLearner(obs_dim=98, action_dim=29, critic_obs_dim=101, device="cpu")
     batch = _make_batch()
+    pre_update_temperature = float(learner.temperature().detach())
 
     critic_metrics = learner.update_critic(batch)
     actor_metrics = learner.update_actor(batch)
     learner.soft_update_target()
 
-    assert "critic_loss" in critic_metrics
-    assert "reward_scale_std" in critic_metrics
-    assert "actor_loss" in actor_metrics
-    assert "temperature" in actor_metrics
+    assert "Loss/critic" in critic_metrics
+    assert "Train/reward_scale_std" in critic_metrics
+    assert "Loss/actor" in actor_metrics
+    assert "Policy/temperature" in actor_metrics
+    assert actor_metrics["Policy/temperature"] != pytest.approx(pre_update_temperature)
+    assert actor_metrics["Policy/temperature"] == pytest.approx(
+        float(learner.temperature().detach())
+    )
+    normalize_metric_map({**critic_metrics, **actor_metrics})
+
+
+def test_flashsac_omits_constant_reward_scale_when_normalization_is_disabled():
+    learner = FlashSACLearner(
+        obs_dim=98,
+        action_dim=29,
+        critic_obs_dim=101,
+        device="cpu",
+        normalize_reward=False,
+    )
+
+    critic_metrics = learner.update_critic(_make_batch())
+
+    assert "Train/reward_scale_std" not in critic_metrics
+    normalize_metric_map(critic_metrics)
 
 
 def test_flashsac_actor_update_does_not_accumulate_critic_grads() -> None:
@@ -247,10 +270,10 @@ def test_flashsac_deferred_actor_metrics_read_once_at_cycle_end() -> None:
     assert metrics == {}
     deferred = learner.read_deferred_actor_metrics()
     assert set(deferred) == {
-        "actor_loss",
-        "actor_entropy",
-        "temperature",
-        "temperature_loss",
+        "Loss/actor",
+        "Loss/entropy",
+        "Policy/temperature",
+        "Loss/temperature",
     }
 
 

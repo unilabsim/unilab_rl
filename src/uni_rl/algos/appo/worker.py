@@ -52,18 +52,6 @@ def put_latest_metrics(metrics_queue: Any, msg: dict[str, Any], *, worker_name: 
         print(f"[{worker_name}] metrics enqueue error: {type(e).__name__}: {e}", file=sys.stderr)
 
 
-def compute_rollout_active_steps_per_sec(
-    *,
-    num_envs: int,
-    steps_per_env: int,
-    rollout_ms: float,
-) -> float | None:
-    """Return rollout collector throughput from active rollout wall time."""
-    if rollout_ms <= 0.0:
-        return None
-    return (int(num_envs) * int(steps_per_env)) / (float(rollout_ms) / 1000.0)
-
-
 def compute_timeout_bootstrap_correction(
     critic: Any,
     collector_device: str,
@@ -245,7 +233,7 @@ def appo_collector_fn(
     _EMA = 0.1
     ema_mlp_infer_ms: float = 0.0
     ema_env_step_ms: float = 0.0
-    ema_rollout_ms: float = 0.0
+    latest_rollout_ms: float | None = None
     ema_env_step_breakdown_ms: dict[str, float] = {}
 
     try:
@@ -310,6 +298,7 @@ def appo_collector_fn(
                     truncated=truncated_raw,
                 )
 
+                environment_rewards = reward_raw.copy()
                 reward_raw += compute_timeout_bootstrap_correction(
                     critic=critic,
                     collector_device=collector_device,
@@ -333,7 +322,7 @@ def appo_collector_fn(
 
                 # Episode tracking (vectorized)
                 total_steps += num_envs
-                current_ep_rewards += reward_raw
+                current_ep_rewards += environment_rewards
                 current_ep_lengths += 1
                 reset_indices = np.where(combined_done_raw > 0.5)[0]
                 if len(reset_indices) > 0:
@@ -347,7 +336,7 @@ def appo_collector_fn(
                 log_info = state.info.get("log", {})
                 for k, v in log_info.items():
                     if k.startswith("reward/"):
-                        ep_reward_components[k].append(v)
+                        ep_reward_components[k.removeprefix("reward/")].append(v)
 
                 # Report every env step so learner-side reward and throughput
                 # displays track the current policy without extra lag.
@@ -357,8 +346,8 @@ def appo_collector_fn(
                             "total_steps": total_steps,
                         }
                         if ep_rewards:
-                            msg["mean_ep_reward"] = statistics.mean(ep_rewards)
-                            msg["mean_ep_length"] = (
+                            msg["return_mean_ep100"] = statistics.mean(ep_rewards)
+                            msg["mean_episode_length"] = (
                                 statistics.mean(ep_lengths) if ep_lengths else 0.0
                             )
                         if ep_completions > 0:
@@ -366,19 +355,14 @@ def appo_collector_fn(
                             ep_timeouts = 0
                             ep_completions = 0
                         # Collector-side timing breakdown
-                        msg["collector_timing_ms"] = {
-                            "rollout_ms": ema_rollout_ms,
+                        collector_timing_ms = {
                             "mlp_infer_ms": ema_mlp_infer_ms,
                             "env_step_ms": ema_env_step_ms,
                             **ema_env_step_breakdown_ms,
                         }
-                        collector_active_steps_per_sec = compute_rollout_active_steps_per_sec(
-                            num_envs=num_envs,
-                            steps_per_env=steps_per_env,
-                            rollout_ms=ema_rollout_ms,
-                        )
-                        if collector_active_steps_per_sec is not None:
-                            msg["collector_active_steps_per_sec"] = collector_active_steps_per_sec
+                        if latest_rollout_ms is not None:
+                            collector_timing_ms["rollout_ms"] = latest_rollout_ms
+                        msg["collector_timing_ms"] = collector_timing_ms
                         if ep_reward_components:
                             msg["reward_components"] = {
                                 k: statistics.mean(v) for k, v in ep_reward_components.items() if v
@@ -398,9 +382,7 @@ def appo_collector_fn(
             if critic_np is not None:
                 write_buf["last_critic"][:] = critic_np
             ring_buffer.signal_write_done()  # atomic increment, non-blocking
-            ema_rollout_ms = (1 - _EMA) * ema_rollout_ms + _EMA * (
-                (time.perf_counter() - t_rollout_start) * 1000
-            )
+            latest_rollout_ms = (time.perf_counter() - t_rollout_start) * 1000
 
     except Exception:
         stop_event.set()
