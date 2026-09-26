@@ -11,6 +11,11 @@ import torch
 from uni_rl.algos.common.collector_timing import extract_env_step_breakdown_timing_ms
 from uni_rl.env_contract import EnvFactory
 from uni_rl.offpolicy.actor_adapter import get_offpolicy_actor_adapter, import_actor_adapter_modules
+from uni_rl.offpolicy.coordination import (
+    LearnerCoordinationState,
+    LearnerPhase,
+    learner_pid_is_alive,
+)
 from uni_rl.offpolicy.thread_budget import apply_torch_thread_runtime
 from uni_rl.utils.device import configure_backend_process_device
 from uni_rl.utils.final_observation import resolve_terminal_observation_contract
@@ -135,15 +140,47 @@ def _wait_for_inference_tick(
     tick_id: int,
     stop_event,
     *,
+    learner_coordination: LearnerCoordinationState | None = None,
+    learner_pid: int | None = None,
     timeout: float = 30.0,
 ) -> bool:
-    deadline = time.monotonic() + timeout
+    """Wait for a learner action using phase and process liveness.
+
+    There is no wall-clock deadline while the learner reports ``BUSY``: compile,
+    graph capture, replay, and update durations are machine-dependent healthy
+    work. The compatibility timeout is retained only for calls that do not
+    provide learner state. With state present, the only timeout is a static
+    ``WAITING_FOR_COLLECTOR`` loop, which indicates request-queue progress
+    stopped rather than slow learning.
+    """
+    last_phase = LearnerPhase.STOPPED
+    last_progress = -1
+    last_progress_change = time.monotonic()
     while not stop_event.is_set():
-        if time.monotonic() >= deadline:
-            raise TimeoutError(f"Timed out waiting for off-policy inference tick {tick_id}")
         try:
             received_tick = int(coordination_queue.get(timeout=0.1))
         except queue.Empty:
+            if learner_coordination is None:
+                if time.monotonic() - last_progress_change >= timeout:
+                    raise TimeoutError(f"Timed out waiting for off-policy inference tick {tick_id}")
+                continue
+            phase, progress = learner_coordination.snapshot()
+            if not learner_pid_is_alive(learner_pid):
+                raise RuntimeError(f"Learner process died before inference tick {tick_id}")
+            if phase is LearnerPhase.STOPPED:
+                raise RuntimeError(f"Learner stopped before inference tick {tick_id}")
+            if phase is not last_phase or progress != last_progress:
+                last_phase = phase
+                last_progress = progress
+                last_progress_change = time.monotonic()
+            elif (
+                phase is LearnerPhase.WAITING_FOR_COLLECTOR
+                and time.monotonic() - last_progress_change >= timeout
+            ):
+                raise TimeoutError(
+                    "Off-policy learner request coordination stalled while waiting "
+                    f"for inference tick {tick_id} (learner process is alive)"
+                )
             continue
         if received_tick != int(tick_id):
             raise RuntimeError(
@@ -173,6 +210,8 @@ def off_policy_collector_fn(
     nan_guard_cfg=None,
     torch_thread_runtime=None,
     backend_device_binder=None,
+    learner_coordination: LearnerCoordinationState | None = None,
+    learner_pid: int | None = None,
 ):
     """Entry point for the off-policy collector subprocess.
 
@@ -199,6 +238,8 @@ def off_policy_collector_fn(
         nan_guard_cfg=nan_guard_cfg,
         torch_thread_runtime=torch_thread_runtime,
         backend_device_binder=backend_device_binder,
+        learner_coordination=learner_coordination,
+        learner_pid=learner_pid,
     )
 
 
@@ -222,6 +263,8 @@ def _run_collector(
     nan_guard_cfg=None,
     torch_thread_runtime=None,
     backend_device_binder=None,
+    learner_coordination=None,
+    learner_pid=None,
 ):
     # Spawn subprocesses do not inherit the parent's adapter registrations;
     # import the configured modules so registration side effects run here too.
@@ -358,6 +401,8 @@ def _run_collector(
                 inference_response_queue,
                 inference_tick,
                 stop_event,
+                learner_coordination=learner_coordination,
+                learner_pid=learner_pid,
             ):
                 break
             actions_np, policy_version = inference_slot.consume_action(tick_id=inference_tick)

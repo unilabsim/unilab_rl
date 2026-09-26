@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -52,6 +53,13 @@ def build_flashsac_double_buffer_runner(
         replay_prefetch_mode=replay_prefetch_mode,
     )
 
+    if "inference_request_timeout_sec" in cfg.training:
+        warnings.warn(
+            "training.inference_request_timeout_sec is deprecated and ignored; "
+            "remove it from owner YAML.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     env = env_factory(1, env_cfg_override)
     try:
         obs_dim, critic_obs_dim = get_obs_dims(dict(env.obs_groups_spec))
@@ -127,6 +135,5 @@ def build_flashsac_double_buffer_runner(
         collector_cpu_ids=collector_cpu_ids,
         dp_sync=dp_sync,
         backend_device_binder=backend_device_binder,
-        inference_request_timeout_sec=cfg.training.inference_request_timeout_sec,
         log_interval=int(cfg.training.log_interval),
     )

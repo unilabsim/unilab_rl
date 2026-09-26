@@ -17,6 +17,7 @@ import uni_rl.offpolicy.runner as runner_module
 from uni_rl.ipc.async_runner import AsyncRunner
 from uni_rl.ipc.inference_slot import SharedInferenceSlot
 from uni_rl.logging.metric_schema import normalize_metric_map
+from uni_rl.offpolicy.coordination import LearnerPhase
 from uni_rl.offpolicy.double_buffer_runner import (
     _LearnerInferenceScheduler,
     algo_display_name,
@@ -377,16 +378,24 @@ def test_mjwarp_collector_start_forwards_learner_device(
         sim_backend="mjwarp",
     )
     collector_kwargs = {}
+    lifecycle: list[str] = []
+
+    monkeypatch.setattr(runner, "_dp_init_broadcast", lambda: lifecycle.append("dp_init"))
+    monkeypatch.setattr(runner, "_prepare_learner", lambda **kwargs: lifecycle.append("prepare"))
 
     def capture_collector(*, target_fn, kwargs):
         del target_fn
+        lifecycle.append("collector_start")
         collector_kwargs.update(kwargs)
 
     monkeypatch.setattr(runner, "_start_collector", capture_collector)
     runner.learn(max_iterations=0, save_interval=0, log_dir=str(tmp_path))
 
+    assert lifecycle == ["dp_init", "prepare", "collector_start"]
     assert collector_kwargs["sim_backend"] == "mjwarp"
     assert collector_kwargs["backend_device"] == "cuda:3"
+    assert collector_kwargs["learner_pid"] > 0
+    assert collector_kwargs["learner_coordination"] is runner._learner_coordination
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -805,23 +814,16 @@ def test_collector_ready_wait_rejects_early_tick(
         _wait_for_inference_request(runner, inference_queue, expected_tick=0)
 
 
-def test_inference_timeout_starts_after_collector_ready(
+def test_collector_request_wait_is_liveness_based_after_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = _make_device_runner(monkeypatch)
-    runner.inference_request_timeout_sec = 0.01
     inference_queue: queue.Queue[int] = queue.Queue()
-    monotonic_values: list[int] = []
-
-    def monotonic() -> float:
-        monotonic_values.append(len(monotonic_values) + 1)
-        return float(monotonic_values[-1])
 
     def publish_ready_and_tick() -> None:
         inference_queue.put(-1)
         inference_queue.put(0)
 
-    monkeypatch.setattr(device_runner_module, "time", SimpleNamespace(monotonic=monotonic))
     monkeypatch.setattr(runner, "_drain_metrics", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_check_collector_alive", lambda: True)
     threading.Timer(0.03, publish_ready_and_tick).start()
@@ -829,11 +831,11 @@ def test_inference_timeout_starts_after_collector_ready(
     tick_id = _wait_for_inference_request(runner, inference_queue, expected_tick=0)
 
     assert tick_id == 0
+    assert runner._learner_coordination.snapshot()[0] is LearnerPhase.BUSY
     inference_queue.put(1)
     next_tick_id = _wait_for_inference_request(runner, inference_queue, expected_tick=1)
 
     assert next_tick_id == 1
-    assert monotonic_values == [1, 2]
 
 
 def test_collector_ready_wait_detects_dead_collector(

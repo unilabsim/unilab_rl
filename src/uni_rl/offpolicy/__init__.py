@@ -8,12 +8,18 @@ from uni_rl.offpolicy.actor_adapter import (
     register_offpolicy_actor_adapter,
 )
 from uni_rl.offpolicy.runner import OffPolicyRunner
+from uni_rl.offpolicy.warmup import (
+    OffPolicyLearnerPreparation,
+    OffPolicyWarmupContext,
+)
 from uni_rl.offpolicy.worker import off_policy_collector_fn
 
 __all__ = [
     "OffPolicyActorAdapter",
+    "OffPolicyLearnerPreparation",
     "OffPolicyLogger",
     "OffPolicyRunner",
+    "OffPolicyWarmupContext",
     "get_offpolicy_actor_adapter",
     "import_actor_adapter_modules",
     "off_policy_collector_fn",

@@ -6,11 +6,13 @@ import os
 import queue as queue_module
 import statistics
 import time
+import warnings
 from collections import defaultdict, deque
 from collections.abc import Callable
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import torch
 
@@ -28,6 +30,7 @@ from uni_rl.logging import OffPolicyLogger, TraceRecorder
 from uni_rl.logging.metric_schema import metric_spec, normalize_metric_map
 from uni_rl.logging.metrics_drain import RewardComponentWindow
 from uni_rl.offpolicy.actor_adapter import get_offpolicy_actor_adapter
+from uni_rl.offpolicy.coordination import LearnerCoordinationState
 from uni_rl.offpolicy.runner import (
     OffPolicyRunner,
     build_offpolicy_sample_info,
@@ -36,6 +39,11 @@ from uni_rl.offpolicy.runner import (
 from uni_rl.offpolicy.thread_budget import (
     format_torch_thread_runtime,
     torch_thread_env,
+)
+from uni_rl.offpolicy.warmup import (
+    OffPolicyWarmupContext,
+    capture_rng_state,
+    restore_rng_state,
 )
 from uni_rl.offpolicy.worker import (
     COLLECTOR_READY_TICK,
@@ -152,7 +160,6 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
     """Single-device off-policy runner with a double-buffered device batch."""
 
     REPLAY_BATCH_READY_POLL_SEC = 0.001
-    INFERENCE_REQUEST_TIMEOUT_SEC = 30.0
 
     def __init__(
         self,
@@ -161,6 +168,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         collector_cpu_ids: list[int] | None = None,
         dp_sync: DpParameterSync | None = None,
         inference_request_timeout_sec: float | None = None,
+        learner_prepare_hook: Callable[[Any, OffPolicyWarmupContext], None] | None = None,
         backend_device_binder: Callable[[str], str | None] | None = None,
         replay_pipeline_factory: Callable[..., GPUResidentReplayPipeline] | None = None,
         target_frequency: int = 1,
@@ -178,23 +186,26 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                 "DoubleBufferOffPolicyRunner only supports replay_prefetch_mode='one_tick'"
             )
         self.replay_prefetch_mode = replay_prefetch_mode
-        if inference_request_timeout_sec is not None and (
-            isinstance(inference_request_timeout_sec, bool)
-            or not isinstance(inference_request_timeout_sec, (int, float))
-            or inference_request_timeout_sec <= 0
-        ):
-            raise ValueError(
-                "inference_request_timeout_sec must be a positive number or None, "
-                f"got {inference_request_timeout_sec!r}"
+        if inference_request_timeout_sec is not None:
+            if (
+                isinstance(inference_request_timeout_sec, bool)
+                or not isinstance(inference_request_timeout_sec, (int, float))
+                or inference_request_timeout_sec <= 0
+            ):
+                raise ValueError(
+                    "inference_request_timeout_sec must be a positive number or None, "
+                    f"got {inference_request_timeout_sec!r}"
+                )
+            warnings.warn(
+                "inference_request_timeout_sec is deprecated and has no effect; "
+                "off-policy coordination is liveness/phase-aware. Remove it from "
+                "runner calls and owner YAML.",
+                DeprecationWarning,
+                stacklevel=2,
             )
-        # The timeout bounds steady-state inference ticks only. Collector
-        # construction and first reset are covered by the ready handshake
-        # below, not by this deadline.
-        self.inference_request_timeout_sec = (
-            float(inference_request_timeout_sec)
-            if inference_request_timeout_sec is not None
-            else self.INFERENCE_REQUEST_TIMEOUT_SEC
-        )
+        # Kept only for source-compatible construction. It is
+        # intentionally not retained as a latency SLA anywhere in the runtime.
+        self.learner_prepare_hook = learner_prepare_hook
         self.target_frequency = max(int(target_frequency), 1)
         self.policy_before_critic = bool(policy_before_critic)
         # Per-rank CPU block owned by this rank's collector (multi-GPU DP);
@@ -206,6 +217,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         self.backend_device_binder = backend_device_binder
         self.replay_pipeline_factory = replay_pipeline_factory
         self._collector_ready = False
+        self._learner_coordination = LearnerCoordinationState()
         # Multi-GPU synchronous data parallelism (None = the bit-identical
         # single-rank path): startup model broadcast, then gradient averaging
         # before every actor/critic/temperature optimizer step.
@@ -283,6 +295,95 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             return
         self.dp_sync.start()
         self.dp_sync.broadcast_from_rank0(self._dp_initial_sync_tensors())
+
+    def _warm_representative_actor(self, context: OffPolicyWarmupContext) -> None:
+        """Run one actor-shaped cold path and restore exploration RNG state."""
+        adapter = get_offpolicy_actor_adapter(self.algo_type)
+        actor_obs = context.inference_observations[:, : self.obs_dim]
+        actor_context = None
+        if adapter is not None and adapter.actor_context_from_obs is not None:
+            actor_context = adapter.actor_context_from_obs(
+                context.inference_observations,
+                self.obs_dim,
+            )
+        if self.obs_normalization:
+            actor_obs = self.learner.obs_normalizer(actor_obs, update=False)
+        action_fn = (adapter.warmup_actions if adapter is not None else None) or (
+            adapter.sample_actions if adapter is not None else None
+        )
+        if action_fn is None and not callable(getattr(self.learner.actor, "explore", None)):
+            # Minimal custom learners may compose inference dynamically. Their
+            # owner hook remains responsible for warmup; this is the documented
+            # no-op compatibility default.
+            return
+        rng_state = capture_rng_state(self.device)
+        try:
+            with torch.no_grad():
+                if action_fn is None:
+                    actions = sample_offpolicy_actions(
+                        actor=self.learner.actor,
+                        algo_type=self.algo_type,
+                        obs_torch=actor_obs,
+                        prev_dones_torch=context.inference_dones,
+                        priv_info_torch=actor_context,
+                    )
+                else:
+                    actions = action_fn(
+                        self.learner.actor,
+                        actor_obs,
+                        context.inference_dones,
+                        actor_context,
+                    )
+            if torch.device(self.device).type == "cuda":
+                torch.cuda.synchronize(self.device)
+            if actions.device.type == "cuda":
+                torch.cuda.synchronize(actions.device)
+        finally:
+            restore_rng_state(rng_state)
+
+    def _prepare_learner(
+        self,
+        *,
+        inference_observations: torch.Tensor,
+        inference_dones: torch.Tensor,
+        replay_pipeline,
+    ) -> None:
+        """Prepare every learner-owned cold path before collection can start."""
+        inference_observations.zero_()
+        inference_dones.zero_()
+        context = OffPolicyWarmupContext(
+            inference_observations=inference_observations,
+            inference_dones=inference_dones,
+            batch_size=self.batch_size,
+            updates_per_step=self.updates_per_step,
+            policy_frequency=self.policy_frequency,
+            target_frequency=self.target_frequency,
+            policy_before_critic=self.policy_before_critic,
+        )
+        self._warm_representative_actor(context)
+        pipeline_warmup = getattr(replay_pipeline, "warmup", None)
+        replay_batch = None
+        if callable(pipeline_warmup):
+            warmup_result = pipeline_warmup()
+            if isinstance(warmup_result, dict):
+                replay_batch = cast(dict[str, torch.Tensor], warmup_result)
+                context = replace(context, replay_batch=replay_batch)
+        prepare = getattr(self.learner, "prepare_for_collection", None)
+        if callable(prepare):
+            prepare(context)
+        if self.learner_prepare_hook is not None:
+            self.learner_prepare_hook(self.learner, context)
+
+    def _shutdown_collector(self) -> None:
+        """Release the lock-step collector without waiting on a tick deadline."""
+        self._learner_coordination.mark_stopped()
+        self._stop_event.set()
+        process = self._collector_process
+        if process is not None and process.is_alive():
+            process.join(timeout=5.0)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5.0)
 
     def _collect_dp_sync_metrics(self, iter_metrics: defaultdict[str, list]) -> None:
         """Move per-optimizer collective timing into this iteration's metrics."""
@@ -544,13 +645,12 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         ckpt_path: str | None,
         train_start_wall: float,
     ) -> int:
-        deadline = (
-            time.monotonic() + self.inference_request_timeout_sec if self._collector_ready else None
-        )
+        self._learner_coordination.mark_waiting()
         while True:
             try:
                 message = int(queue.get(timeout=0.1))
             except queue_module.Empty:
+                self._learner_coordination.mark_progress()
                 replay_pipeline.progress()
                 self._drain_metrics(
                     metrics_queue,
@@ -568,17 +668,12 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                         ckpt_path,
                         train_start_wall,
                     )
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"Timed out waiting for collector inference tick {expected_tick} "
-                        f"(inference_request_timeout_sec={self.inference_request_timeout_sec})"
-                    )
                 continue
+            self._learner_coordination.mark_busy()
             if message == COLLECTOR_READY_TICK:
                 if self._collector_ready:
                     raise RuntimeError("Collector sent duplicate ready signal")
                 self._collector_ready = True
-                deadline = time.monotonic() + self.inference_request_timeout_sec
                 continue
             if not self._collector_ready:
                 raise RuntimeError(
@@ -741,18 +836,16 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         _fail_collector_died for full cleanup. This avoids an unbounded blocking
         put when the collector dies before consuming the previous response.
         """
-        deadline = time.monotonic() + timeout
+        del timeout
         while True:
             try:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise _CollectorDiedError(f"{label} (queue full timeout)")
-                queue.put(int(value), timeout=min(0.5, remaining))
+                queue.put(int(value), timeout=0.5)
                 return
             except queue_module.Full:
                 if not self._check_collector_alive():
                     raise _CollectorDiedError(f"{label} (collector dead)")
-                # else loop & retry until deadline
+                # A healthy collector owns the response slot. Its speed is not a
+                # learner-side SLA; actual process death is checked each retry.
 
     def _release_inference_tick(
         self,
@@ -985,6 +1078,16 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             # --- inference request reaches learner.actor ---
             self._dp_init_broadcast()
 
+            # Algorithm-owned compilation, graph capture, actor warmup, and
+            # custom preparation hooks complete before a collector can request
+            # tick 0. DP initialization remains first so warmup sees broadcast
+            # parameters and can capture rank-aligned graphs.
+            self._prepare_learner(
+                inference_observations=inference_obs_device,
+                inference_dones=inference_dones_device,
+                replay_pipeline=replay_pipeline,
+            )
+
             # --- start collector ---
             collector_kwargs = {
                 "env_factory": self.env_factory,
@@ -1005,7 +1108,13 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                 "nan_guard_cfg": self.nan_guard_cfg,
                 "torch_thread_runtime": self.torch_thread_runtime,
                 "backend_device_binder": self.backend_device_binder,
+                "learner_coordination": self._learner_coordination,
+                "learner_pid": os.getpid(),
             }
+            # The collector may finish env construction quickly while the
+            # learner is still in its startup sleep. It must observe a healthy
+            # waiting learner, never the pre-start STOPPED phase.
+            self._learner_coordination.mark_waiting()
             with torch_thread_env(self.torch_thread_runtime, role="collector"):
                 self._start_collector(
                     target_fn=off_policy_collector_fn,
@@ -1508,6 +1617,10 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                 train_start_wall,
             )
             raise
+        finally:
+            # Learner stop/death must release the collector even when the active
+            # exception is unrelated to collector liveness.
+            self._shutdown_collector()
 
     @staticmethod
     def _make_summary(

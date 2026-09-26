@@ -29,6 +29,12 @@ from uni_rl.algos.common.learner_boilerplate import (
     resolve_finite_check_flags,
 )
 from uni_rl.algos.common.normalization import EmpiricalNormalization
+from uni_rl.offpolicy.warmup import (
+    OffPolicyWarmupContext,
+    capture_rng_state,
+    make_offpolicy_warmup_batch,
+    restore_rng_state,
+)
 
 
 @contextmanager
@@ -456,6 +462,8 @@ class FastSACLearner(LearnerBoilerplateMixin):
         self.nvtx_profile_ranges = bool(nvtx_profile_ranges) and self._device_type == "cuda"
         self.amp_dtype = amp_dtype
         self._amp_dtype = self._resolve_amp_dtype(amp_dtype, self._device_type)
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
         self.critic_obs_dim = critic_obs_dim
 
         # Build actor (uses obs only)
@@ -582,6 +590,68 @@ class FastSACLearner(LearnerBoilerplateMixin):
     def use_update_cycle(self) -> bool:
         """Whether this learner owns the whole-cycle update orchestration."""
         return self._compile_full_update_cycle
+
+    def prepare_for_collection(self, warmup_context: OffPolicyWarmupContext) -> None:
+        """Compile/capture all learner-owned update cold paths before collection.
+
+        The whole-cycle path delegates to the owner's zero-learning-rate warmup
+        and graph capture helper, which restores model, optimizer, RNG, and
+        gradient state. Compatibility paths use synthetic replay data and then
+        restore the complete checkpointable learner state and all RNG streams.
+        The resulting compiled-code cache is intentionally retained.
+        """
+        large_batch = warmup_context.replay_batch or make_offpolicy_warmup_batch(
+            warmup_context,
+            obs_dim=self.obs_dim,
+            critic_obs_dim=self.critic_obs_dim,
+            action_dim=self.action_dim,
+            device=self.device,
+        )
+        if self.use_update_cycle:
+            self._ensure_update_cycle_graph(
+                large_batch,
+                updates_per_step=warmup_context.updates_per_step,
+                policy_frequency=warmup_context.policy_frequency,
+                target_frequency=warmup_context.target_frequency,
+                policy_before_critic=warmup_context.policy_before_critic,
+            )
+            return
+
+        saved_state = copy.deepcopy(self.get_state_dict())
+        saved_scaler = copy.deepcopy(self.scaler.state_dict()) if self.scaler is not None else None
+        saved_found_inf = self._optimizer_found_inf.detach().clone()
+        saved_q_finite = self._q_update_finite.detach().clone()
+        rng_state = capture_rng_state(self.device)
+        try:
+            batch_size = max(1, int(warmup_context.batch_size))
+            for update_idx in range(max(1, int(warmup_context.updates_per_step))):
+                start = update_idx * batch_size
+                batch = {
+                    key: value[start : start + batch_size] for key, value in large_batch.items()
+                }
+                do_actor_update = update_idx % max(1, warmup_context.policy_frequency) == 0
+                if warmup_context.policy_before_critic and do_actor_update:
+                    self.update_actor(batch, read_metrics=False)
+                self.update_critic(batch, read_metrics=False)
+                if not warmup_context.policy_before_critic and do_actor_update:
+                    self.update_actor(batch, read_metrics=False)
+                if update_idx % max(1, warmup_context.target_frequency) == 0:
+                    self.soft_update_target()
+        finally:
+            self.load_state_dict(saved_state)
+            if self.scaler is not None and saved_scaler is not None:
+                self.scaler.load_state_dict(saved_scaler)
+            self._optimizer_found_inf.copy_(saved_found_inf)
+            self._q_update_finite.copy_(saved_q_finite)
+            self._pending_actor_metric_values = None
+            self._pending_cycle_critic_metric_values = None
+            self._pending_cycle_metric_values = None
+            restore_rng_state(rng_state)
+            self._zero_optimizer_gradients(self.q_optimizer)
+            self._zero_optimizer_gradients(self.actor_optimizer)
+            self._zero_optimizer_gradients(self.alpha_optimizer)
+            if self._device_type == "cuda":
+                torch.cuda.synchronize(self.device)
 
     def set_gradient_sync(self, sync: Callable[[Iterable[torch.Tensor]], None] | None) -> None:
         """Attach the compatibility-device DP reduction."""

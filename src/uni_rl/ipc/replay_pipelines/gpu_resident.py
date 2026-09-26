@@ -587,6 +587,35 @@ class GPUResidentReplayPipeline:
                 self._sync_stream.wait_event(snapshot_event)
             return end_ptr, fields
 
+    def warmup(self) -> dict[str, torch.Tensor]:
+        """Compile/warm the owner's device gather path without replay state.
+
+        This scratch gather writes only the current cold output slot and does
+        not advance replay pointers, prepare metadata, RNG used by training, or
+        any learner state. It lets CUDA/MPS compile the same randint/index_select
+        path used by the first real replay sample before tick 0.
+        """
+        if self._closed:
+            raise RuntimeError("Cannot warm replay pipeline after pipeline.close()")
+        if self._main_thread_submission:
+            self._assert_mps_learner_thread()
+        slot = self._cold
+        generator = torch.Generator(device=self._device)
+        generator.manual_seed(self._base_seed - 1)
+        visible_size = min(self._capacity, max(1, self._sample_count))
+        if self._device.type == "cuda":
+            event = cast(Any, torch.cuda.Event())
+            assert self._sync_stream is not None
+            with torch.cuda.device(self._device), torch.cuda.stream(self._sync_stream):
+                self._gather_rows(visible_size=visible_size, slot=slot, gen=generator)
+                event.record(self._sync_stream)
+            event.synchronize()
+        else:
+            self._gather_rows(visible_size=visible_size, slot=slot, gen=generator)
+            torch.mps.synchronize()
+        self._gpu_packed[slot].zero_()
+        return self._large_batch_view(slot)
+
     def start_prepare(
         self,
         tick_id: int,
