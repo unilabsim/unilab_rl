@@ -119,6 +119,20 @@ def test_flashsac_gradient_sync_rejects_dp_in_whole_cycle_mode() -> None:
     assert learner.use_update_cycle is True
 
 
+def test_flashsac_update_cycle_rejects_compatibility_fallback() -> None:
+    learner = _make_small_learner()
+    batch = _make_small_batch(8)
+
+    with pytest.raises(RuntimeError, match="requires the NVIDIA CUDA whole-cycle path"):
+        learner.update_cycle(
+            batch,
+            updates_per_step=1,
+            policy_frequency=1,
+            target_frequency=1,
+            policy_before_critic=False,
+        )
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA runtime selection required")
 def test_flashsac_nvidia_cuda_ignores_legacy_compile_opt_out(monkeypatch) -> None:
     monkeypatch.setattr(
@@ -410,7 +424,7 @@ def test_flashsac_update_cycle_matches_runner_composition(
     rng_state = torch.random.get_rng_state()
 
     torch.random.set_rng_state(rng_state)
-    actual.update_cycle(
+    actual._run_update_cycle_core(
         large_batch,
         updates_per_step=4,
         policy_frequency=policy_frequency,
@@ -447,7 +461,7 @@ def test_flashsac_update_cycle_defers_metrics_until_one_read() -> None:
         for key, value in _make_small_batch(8).items()
     }
 
-    learner.update_cycle(
+    learner._run_update_cycle_core(
         large_batch,
         updates_per_step=2,
         policy_frequency=2,

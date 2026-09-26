@@ -147,10 +147,6 @@ class RewardNormalizer:
 
 
 class FlashSACLearner(LearnerBoilerplateMixin):
-    # FlashSAC's loss/actor kernels are compatible with Inductor CUDA Graph
-    # replay.  Keeping this enabled removes repeated host launches; metric
-    # tensors are staged and read once per learner cycle below.
-    _compile_loss_cudagraphs = True
     supports_deferred_update_metrics = True
 
     def __init__(
@@ -358,7 +354,7 @@ class FlashSACLearner(LearnerBoilerplateMixin):
             compile_kwargs = {
                 "dynamic": False,
                 "options": {
-                    "triton.cudagraphs": bool(self._compile_loss_cudagraphs),
+                    "triton.cudagraphs": True,
                 },
             }
         if self.compile_full_objectives:
@@ -627,7 +623,7 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         self.critic.normalize_parameters()
 
         if not read_metrics:
-            critic_tensors = (critic_loss,)
+            critic_tensors: tuple[torch.Tensor, ...] = (critic_loss,)
             if self.reward_normalizer is not None:
                 critic_tensors = (*critic_tensors, reward_scale_std)
             self._pending_cycle_critic_metric_values = torch.stack(
@@ -1023,14 +1019,10 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         """Run the complete learner block used by the off-policy runner."""
         del read_metrics
         if not self.use_update_cycle:
-            self._run_update_cycle_core(
-                large_batch,
-                updates_per_step=updates_per_step,
-                policy_frequency=policy_frequency,
-                target_frequency=target_frequency,
-                policy_before_critic=policy_before_critic,
+            raise RuntimeError(
+                "FlashSAC update_cycle() requires the NVIDIA CUDA whole-cycle path; "
+                "use the per-update methods for compatibility devices"
             )
-            return
         self._ensure_update_cycle_graph(
             large_batch,
             updates_per_step=updates_per_step,

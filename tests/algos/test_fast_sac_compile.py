@@ -104,6 +104,36 @@ def test_fast_sac_compile_targets_training_hot_paths(monkeypatch) -> None:
     ]
 
 
+def test_fast_sac_whole_cycle_uses_max_autotune_without_nested_graphs(monkeypatch) -> None:
+    calls: list[tuple[str, Any]] = []
+
+    def fake_compile(fn: Callable, **kwargs):
+        calls.append((fn.__qualname__, kwargs))
+        return fn
+
+    learner = _small_fast_sac_learner()
+    learner.device = torch.device("cuda")
+    learner._compile_full_update_cycle = True
+    monkeypatch.setattr(
+        fast_sac_module,
+        "get_torch_compile_for_cuda",
+        lambda *_args, **_kwargs: fake_compile,
+    )
+
+    learner._compile_training_methods()
+
+    assert calls == [
+        (
+            "FastSACLearner._critic_loss_tensors",
+            {"dynamic": False, "mode": "max-autotune-no-cudagraphs"},
+        ),
+        (
+            "FastSACLearner._actor_loss_tensors",
+            {"dynamic": False, "mode": "max-autotune-no-cudagraphs"},
+        ),
+    ]
+
+
 def test_fast_sac_gradient_sync_rejects_dp_in_whole_cycle_mode() -> None:
     learner = _small_fast_sac_learner()
     learner._compile_full_update_cycle = True
@@ -112,6 +142,19 @@ def test_fast_sac_gradient_sync_rejects_dp_in_whole_cycle_mode() -> None:
         learner.set_gradient_sync(lambda _parameters: None)
 
     assert learner.use_update_cycle is True
+
+
+def test_fast_sac_update_cycle_rejects_compatibility_fallback() -> None:
+    learner = _small_fast_sac_learner()
+
+    with pytest.raises(RuntimeError, match="requires the NVIDIA CUDA whole-cycle path"):
+        learner.update_cycle(
+            _small_offpolicy_batch(),
+            updates_per_step=1,
+            policy_frequency=1,
+            target_frequency=1,
+            policy_before_critic=False,
+        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="NVIDIA CUDA runtime required")
@@ -128,6 +171,29 @@ def test_fast_sac_nvidia_cuda_fails_closed_without_inductor(monkeypatch) -> None
             device="cuda:0",
             use_compile=False,
         )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA runtime selection required")
+def test_fast_sac_hip_cuda_keeps_compatible_compile_opt_out(monkeypatch) -> None:
+    with monkeypatch.context() as hip_runtime:
+        hip_runtime.setattr(torch.version, "hip", "simulated-rocm", raising=False)
+        learner = FastSACLearner(
+            obs_dim=4,
+            action_dim=2,
+            critic_obs_dim=5,
+            device="cuda:0",
+            actor_hidden_dim=8,
+            critic_hidden_dim=8,
+            num_atoms=3,
+            num_q_networks=2,
+            use_layer_norm=False,
+            use_compile=False,
+        )
+
+    assert learner.use_compile is False
+    assert learner.use_update_cycle is False
+    learner.set_gradient_sync(lambda _parameters: None)
+    assert learner._gradient_sync is not None
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="NVIDIA CUDA runtime required")
@@ -460,7 +526,7 @@ def test_fast_sac_update_cycle_matches_runner_composition(
             expected.soft_update_target()
 
     torch.random.set_rng_state(rng_state)
-    actual.update_cycle(
+    actual._run_update_cycle_core(
         large_batch,
         updates_per_step=updates_per_step,
         policy_frequency=policy_frequency,
@@ -494,7 +560,7 @@ def test_fast_sac_update_cycle_defers_metrics_until_one_read() -> None:
     batch = _small_offpolicy_batch()
     large_batch = {key: value.repeat(2, *[1] * (value.ndim - 1)) for key, value in batch.items()}
 
-    learner.update_cycle(
+    learner._run_update_cycle_core(
         large_batch,
         updates_per_step=2,
         policy_frequency=1,

@@ -394,10 +394,6 @@ class FastSACLearner(LearnerBoilerplateMixin):
     - Distributional critic (C51, num_atoms=101)
     """
 
-    # Keep Inductor's fused loss kernels and remove their repeated host launch
-    # overhead.  This outperforms capturing the unfused eager loss on current
-    # Ada-class GPUs while remaining scoped to use_compile=True.
-    _compile_loss_cudagraphs = True
     supports_deferred_update_metrics = True
 
     def __init__(
@@ -644,14 +640,21 @@ class FastSACLearner(LearnerBoilerplateMixin):
         compile_fn = get_torch_compile_for_cuda(self.device, warn=True)
         if compile_fn is None:
             return
-        compile_kwargs = {
-            "dynamic": False,
-            "options": {
-                "triton.cudagraphs": bool(
-                    self._compile_loss_cudagraphs and not self._compile_full_update_cycle
-                )
-            },
-        }
+        if self._compile_full_update_cycle:
+            # The owner-managed CUDA Graph must not nest Inductor Graph Trees.
+            # Portable max-autotune lets Triton select kernels for the installed
+            # GPU instead of restoring architecture-specific learner paths.
+            compile_kwargs = {
+                "dynamic": False,
+                "mode": "max-autotune-no-cudagraphs",
+            }
+        else:
+            compile_kwargs = {
+                "dynamic": False,
+                "options": {
+                    "triton.cudagraphs": True,
+                },
+            }
         self.__dict__["_critic_loss_tensors"] = compile_fn(
             self._critic_loss_tensors,
             **compile_kwargs,
@@ -1022,14 +1025,10 @@ class FastSACLearner(LearnerBoilerplateMixin):
         """Run the complete learner update block used by the off-policy runner."""
         del read_metrics  # Metrics are staged on device and read once by the runner.
         if not self.use_update_cycle:
-            self._run_update_cycle_core(
-                large_batch,
-                updates_per_step=updates_per_step,
-                policy_frequency=policy_frequency,
-                target_frequency=target_frequency,
-                policy_before_critic=policy_before_critic,
+            raise RuntimeError(
+                "FastSAC update_cycle() requires the NVIDIA CUDA whole-cycle path; "
+                "use the per-update methods for compatibility devices"
             )
-            return
         self._ensure_update_cycle_graph(
             large_batch,
             updates_per_step=updates_per_step,

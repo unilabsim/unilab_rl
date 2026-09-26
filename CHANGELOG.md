@@ -19,11 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - FastSAC, FlashSAC, and inherited WarpSAC now use one owner-managed
-  whole-update-cycle CUDA Graph on NVIDIA CUDA. FlashSAC/WarpSAC compile that
-  graph with architecture-portable Inductor max autotuning. The legacy NVIDIA
+  whole-update-cycle CUDA Graph on NVIDIA CUDA. All three compile that graph
+  with architecture-portable Inductor max autotuning. The legacy NVIDIA
   opt-out and loss-graph fallback were removed; incompatible options fail
-  closed instead of silently selecting the slower path. ROCm/HIP, MPS, CPU, and
-  other compatibility devices retain their existing eager or Inductor paths.
+  closed instead of silently selecting the slower path. ROCm/HIP, MPS, CPU,
+  and other compatibility devices retain their existing eager or Inductor
+  paths.
 - Added a canonical TensorBoard/wandb metric schema with explicit owners, units,
   aggregation windows, DP reductions, and step axes. Fields already available in
   upstream RSL-RL use its tags verbatim; extensions stay in the terse `Train`,
