@@ -12,6 +12,7 @@ from uni_rl.algos.fast_sac.learner import (
     FastSACLearner,
     SACActor,
 )
+from uni_rl.logging.metric_schema import normalize_metric_map
 
 
 def _small_fast_sac_learner(*, use_autotune: bool = True) -> FastSACLearner:
@@ -41,6 +42,29 @@ def _small_offpolicy_batch(batch_size: int = 4) -> dict[str, torch.Tensor]:
         "dones": torch.tensor([0.0, 1.0, 0.0, 1.0]),
         "truncated": torch.tensor([0.0, 1.0, 0.0, 0.0]),
     }
+
+
+def test_fast_sac_metric_source_keys_are_canonical() -> None:
+    learner = _small_fast_sac_learner()
+    batch = _small_offpolicy_batch()
+
+    critic_metrics = learner.update_critic(batch)
+    actor_metrics = learner.update_actor(batch)
+
+    assert set(critic_metrics) == {
+        "Loss/critic",
+        "Train/critic_gradient_norm",
+        "Train/target_q_max",
+        "Train/target_q_min",
+        "Loss/temperature",
+        "Policy/temperature",
+    }
+    assert set(actor_metrics) == {
+        "Loss/actor",
+        "Train/actor_gradient_norm",
+        "Loss/entropy",
+    }
+    normalize_metric_map({**critic_metrics, **actor_metrics})
 
 
 def test_fast_sac_compile_targets_training_hot_paths(monkeypatch) -> None:

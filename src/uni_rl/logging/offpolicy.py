@@ -14,36 +14,42 @@ from rich.table import Table
 from rich.text import Text
 
 from uni_rl.logging.common import BaseTrainingLogger, _fmt_number, _load_wandb
+from uni_rl.logging.metric_schema import (
+    LOGGER_OWNED_METRICS,
+    normalize_metric_map,
+    reward_term_key,
+    validate_metric_tags,
+)
 
 _COLLECTOR_WAIT_TIMING_SPEC = (
-    "timing/learner_collector_wait_ms",
+    "Perf/learner_collector_wait_ms",
     "Collector Wait",
     "_collector_wait_time",
 )
-_INFERENCE_TIMING_SPEC = ("timing/learner_inference_ms", "Inference", "_inference_time")
+_INFERENCE_TIMING_SPEC = ("Perf/learner_inference_ms", "Inference", "_inference_time")
 _COLLECTOR_RELEASE_TIMING_SPEC = (
-    "timing/learner_collector_release_ms",
+    "Perf/learner_collector_release_ms",
     "Collector Release",
     "_sync_coordination_time",
 )
 _REPLAY_BATCH_WAIT_TIMING_SPEC = (
-    "timing/learner_replay_batch_wait_ms",
+    "Perf/learner_replay_batch_wait_ms",
     "Replay Batch Wait",
     "_replay_batch_wait_time",
 )
 _REPLAY_STAGE_TIMING_SPEC = (
-    "timing/learner_replay_stage_ms",
+    "Perf/learner_replay_stage_ms",
     "Replay Stage",
     "_learner_replay_stage_time",
 )
 _REPLAY_SAMPLE_TIMING_SPEC = (
-    "timing/learner_replay_sample_ms",
+    "Perf/learner_replay_sample_ms",
     "Replay Sample",
     "_learner_replay_sample_time",
 )
-_TRAIN_TIMING_SPEC = ("timing/learner_train_ms", "Train", "_train_time")
+_TRAIN_TIMING_SPEC = ("Perf/learning_time", "Learning", "_train_time")
 _WEIGHT_PUBLISH_TIMING_SPEC = (
-    "timing/learner_weight_publish_ms",
+    "Perf/learner_weight_publish_ms",
     "Weight Publish",
     "_weight_sync_time",
 )
@@ -67,15 +73,15 @@ _LEARNER_TIMING_PROFILES = {
 }
 
 _SAC_FAMILY_DETAIL_TIMING_SPECS = (
-    ("timing/learner_inference_h2d_ms", "Inference H2D", "_inference_h2d_time"),
+    ("Perf/learner_inference_h2d_ms", "Inference H2D", "_inference_h2d_time"),
     (
-        "timing/learner_inference_forward_ms",
+        "Perf/learner_inference_forward_ms",
         "Inference Forward",
         "_inference_forward_time",
     ),
-    ("timing/learner_inference_d2h_ms", "Inference D2H", "_inference_d2h_time"),
+    ("Perf/learner_inference_d2h_ms", "Inference D2H", "_inference_d2h_time"),
     (
-        "timing/replay_ingress_h2d_submit_ms",
+        "Perf/replay_ingress_h2d_submit_ms",
         "Replay H2D Submit",
         "_replay_ingress_h2d_submit_time",
     ),
@@ -86,8 +92,8 @@ _LEARNER_DETAIL_TIMING_PROFILES = {
     "appo": (),
 }
 
-_LEARNER_OTHER_TIMING_SPEC = ("timing/learner_other_ms", "Other", "")
-_ITER_WALL_TIMING_SPEC = ("perf/iter_ms", "Iter Wall", "")
+_LEARNER_OTHER_TIMING_LABEL = "Other"
+_ITER_WALL_TIMING_SPEC = ("Perf/iteration_time", "Iter Wall", "")
 
 _COLLECTOR_TIMING_SPECS = {
     "mlp_infer_ms": (1.0, "MLP Infer", "per_step"),
@@ -137,31 +143,12 @@ class _TerminalSnapshot:
     batch_size_per_rank: int
 
 
-def _metric_backend_key(key: str) -> str:
-    """Keep canonical slash metrics intact; namespace legacy flat metrics under train/."""
-    return key if "/" in key else f"train/{key}"
+def _set_backend_scalar(scalars: dict[str, Any], tag: str, value: Any) -> None:
+    """Insert one canonical scalar and fail closed on tag collisions."""
 
-
-def _reward_backend_key(key: str) -> str:
-    """Keep canonical reward/* keys intact; namespace bare component names under reward/."""
-    return key if key.startswith("reward/") else f"reward/{key}"
-
-
-def _dedupe_metric_aliases(metrics: dict[str, float] | None) -> dict[str, float] | None:
-    """Drop legacy flat APPO aliases when canonical metrics are present."""
-    if not metrics:
-        return metrics
-    normalized = dict(metrics)
-    aliases = {
-        "surrogate_loss": "loss/policy_loss",
-        "value_loss": "loss/value_loss",
-        "entropy": "policy/entropy",
-        "kl": "ppo/approx_kl",
-    }
-    for legacy_key, canonical_key in aliases.items():
-        if canonical_key in normalized:
-            normalized.pop(legacy_key, None)
-    return normalized
+    if tag in scalars:
+        raise ValueError(f"duplicate backend metric tag {tag!r}")
+    scalars[tag] = value
 
 
 class OffPolicyLogger(BaseTrainingLogger):
@@ -233,24 +220,20 @@ class OffPolicyLogger(BaseTrainingLogger):
         self._inference_d2h_time: float = 0.0
         self._inference_time: float = 0.0
         self._iteration_time: float | None = None
-        self._throughput_steps: int = 0
-        self._steps_per_sec_override: float | None = None
-        self._samples_per_sec_override: float | None = None
-        self._collector_active_steps_per_sec: float | None = None
+        self._throughput_env_steps: int = 0
+        self._env_steps_per_sec_override: float | None = None
+        self._learner_replay_rows_per_sec_override: float | None = None
         self._batch_size_per_rank: int = 0
         self._effective_batch_size: int = 0
-        self._replay_samples_per_iter: int = 0
-        self._learner_samples_per_iter: int = 0
+        self._learner_replay_rows_per_iter: int = 0
         self._has_iteration_extra_info: bool = False
         self._collector_timing: dict[str, float] = {}
         if timing_profile not in _LEARNER_TIMING_PROFILES:
             raise ValueError("timing_profile must be 'sac_family' or 'appo'")
         self._timing_profile = timing_profile
-        self._timeout_rate: float = 0.0
+        self._timeout_rate: float | None = None
         self._buffer_utilization: float = 0.0
         self._runtime_manifest: dict[str, Any] = {}
-        self._staging_pool_len: int = 0
-        self._staging_pool_max: int = 0
         self._status: str = "Initializing..."
         self._training_timer_started: bool = False
         self._terminal_samples: deque[_TerminalSample] = deque(maxlen=_TERMINAL_AVERAGE_MAX_SAMPLES)
@@ -284,25 +267,25 @@ class OffPolicyLogger(BaseTrainingLogger):
         pct = current / max(target, 1) * 100
         self._status = f"Buffer fill: {current:,}/{target:,} ({pct:.0f}%)"
 
-    def _get_iter_steps_per_sec(self) -> float | None:
-        if self._steps_per_sec_override is not None:
-            return self._steps_per_sec_override
-        if not self._has_iteration_extra_info or self._throughput_steps <= 0:
+    def _get_iter_env_steps_per_sec(self) -> float | None:
+        if self._env_steps_per_sec_override is not None:
+            return self._env_steps_per_sec_override
+        if not self._has_iteration_extra_info or self._throughput_env_steps <= 0:
             return None
-        iter_time = self._get_iter_wall_time()
-        if iter_time <= 0:
+        iter_time = self._get_measured_iter_wall_time()
+        if iter_time is None or iter_time <= 0:
             return None
-        return self._throughput_steps / iter_time
+        return self._throughput_env_steps / iter_time
 
-    def _get_effective_samples_per_sec(self) -> float | None:
-        if self._samples_per_sec_override is not None:
-            return self._samples_per_sec_override
-        if not self._has_iteration_extra_info or self._learner_samples_per_iter <= 0:
+    def _get_learner_replay_rows_per_sec(self) -> float | None:
+        if self._learner_replay_rows_per_sec_override is not None:
+            return self._learner_replay_rows_per_sec_override
+        if not self._has_iteration_extra_info or self._learner_replay_rows_per_iter <= 0:
             return None
-        iter_time = self._get_iter_wall_time()
-        if iter_time <= 0:
+        iter_time = self._get_measured_iter_wall_time()
+        if iter_time is None or iter_time <= 0:
             return None
-        return self._learner_samples_per_iter / iter_time
+        return self._learner_replay_rows_per_iter / iter_time
 
     def _learner_phase_times(self) -> dict[str, float]:
         """Return mutually exclusive learner main-thread phases by backend key."""
@@ -328,16 +311,14 @@ class OffPolicyLogger(BaseTrainingLogger):
     def _get_learner_other_time(self) -> float:
         return max(self._get_iter_wall_time() - self._get_learner_accounted_time(), 0.0)
 
-    def _get_iter_pct(self, seconds: float) -> float:
-        iter_time = self._get_iter_wall_time()
-        if iter_time <= 0.0:
-            return 0.0
-        return seconds / iter_time * 100.0
-
     def _get_iter_wall_time(self) -> float:
+        measured = self._get_measured_iter_wall_time()
+        return measured if measured is not None else self._get_learner_accounted_time()
+
+    def _get_measured_iter_wall_time(self) -> float | None:
         if self._iteration_time is not None and self._iteration_time > 0.0:
             return self._iteration_time
-        return self._get_learner_accounted_time()
+        return None
 
     def _get_collector_cycle_ms(
         self,
@@ -361,20 +342,20 @@ class OffPolicyLogger(BaseTrainingLogger):
     ) -> Text:
         snapshot = terminal_snapshot or self._terminal_snapshot
         iter_steps_per_sec = (
-            snapshot.scalars.get("steps_per_sec")
+            snapshot.scalars.get("env_steps_per_sec")
             if snapshot is not None
-            else self._get_iter_steps_per_sec()
+            else self._get_iter_env_steps_per_sec()
         )
-        effective_samples_per_sec = (
-            snapshot.scalars.get("samples_per_sec")
+        learner_replay_rows_per_sec = (
+            snapshot.scalars.get("learner_replay_rows_per_sec")
             if snapshot is not None
-            else self._get_effective_samples_per_sec()
+            else self._get_learner_replay_rows_per_sec()
         )
         header_extra_fields: list[tuple[str, str]] = []
         if iter_steps_per_sec is not None:
             header_extra_fields.append((f"Steps/s {iter_steps_per_sec:,.0f}", "bold green"))
-        if effective_samples_per_sec is not None:
-            header_extra_fields.append((f"Samples/s {effective_samples_per_sec:,.0f}", "bold cyan"))
+        if learner_replay_rows_per_sec is not None:
+            header_extra_fields.append((f"Rows/s {learner_replay_rows_per_sec:,.0f}", "bold cyan"))
         if snapshot is not None:
             header_extra_fields.append(
                 (
@@ -427,19 +408,20 @@ class OffPolicyLogger(BaseTrainingLogger):
             {
                 "iter_wall_time": self._get_iter_wall_time(),
                 "learner_other_time": self._get_learner_other_time(),
-                "timeout_rate": self._timeout_rate,
             }
         )
+        if self._timeout_rate is not None:
+            scalars["timeout_rate"] = self._timeout_rate
         if self._mean_ep_length > 0.0:
             scalars["mean_ep_length"] = self._mean_ep_length
         if reward is not None:
             scalars["reward"] = float(reward)
-        steps_per_sec = self._get_iter_steps_per_sec()
+        steps_per_sec = self._get_iter_env_steps_per_sec()
         if steps_per_sec is not None:
-            scalars["steps_per_sec"] = steps_per_sec
-        samples_per_sec = self._get_effective_samples_per_sec()
+            scalars["env_steps_per_sec"] = steps_per_sec
+        samples_per_sec = self._get_learner_replay_rows_per_sec()
         if samples_per_sec is not None:
-            scalars["samples_per_sec"] = samples_per_sec
+            scalars["learner_replay_rows_per_sec"] = samples_per_sec
 
         now = time.monotonic()
         self._terminal_samples.append(
@@ -470,12 +452,11 @@ class OffPolicyLogger(BaseTrainingLogger):
 
     def update_collector_timing(self, timing_ms: dict[str, float]):
         normalized = dict(timing_ms)
-        normalized.pop("sync_idle_ms", None)
-        normalized.pop("bookkeeping_ms", None)
+        unknown = sorted(set(normalized) - set(_COLLECTOR_TIMING_SPECS))
+        if unknown:
+            names = ", ".join(unknown)
+            raise ValueError(f"unregistered collector timing keys: {names}")
         self._collector_timing.update(normalized)
-
-    def update_collector_active_steps_per_sec(self, steps_per_sec: float):
-        self._collector_active_steps_per_sec = float(steps_per_sec)
 
     def update_timeout_rate(self, timeout_rate: float):
         self._timeout_rate = float(timeout_rate)
@@ -483,25 +464,18 @@ class OffPolicyLogger(BaseTrainingLogger):
     def update_buffer_utilization(self, utilization: float):
         self._buffer_utilization = float(utilization)
 
-    def update_staging_pool(self, current_len: int, max_size: int):
-        self._staging_pool_len = current_len
-        self._staging_pool_max = max_size
-
     def update_runtime_manifest(self, manifest: dict[str, Any]) -> None:
         self._runtime_manifest.update(manifest)
 
-    def log_collector(self, total_steps: int, buffer_size: int, mean_reward: float = 0.0):
+    def log_collector(self, total_steps: int, buffer_size: int):
         self._total_steps = total_steps
         self._buffer_size = buffer_size
-        if mean_reward != 0:
-            self._reward_history.append(mean_reward)
 
     def log_step(
         self,
         iteration: int,
         metrics: dict[str, float] | None = None,
-        reward: float | None = None,
-        reward_metrics: dict[str, float] | None = None,
+        return_mean_ep100: float | None = None,
         reward_components: dict[str, float] | None = None,
         train_time: float = 0.0,
         collector_wait_time: float = 0.0,
@@ -518,7 +492,21 @@ class OffPolicyLogger(BaseTrainingLogger):
         iteration_time: float | None = None,
         extra_info: dict | None = None,
     ):
-        metrics = _dedupe_metric_aliases(metrics)
+        if metrics:
+            metrics = normalize_metric_map(metrics)
+            if "Train/iteration" in metrics:
+                raise ValueError(
+                    "OffPolicyLogger owns Train/iteration; do not emit it from learner metrics"
+                )
+            owned = sorted(set(metrics) & LOGGER_OWNED_METRICS)
+            if owned:
+                names = ", ".join(owned)
+                raise ValueError(
+                    f"logger-owned metrics must use dedicated log_step inputs: {names}"
+                )
+        if reward_components:
+            for component in reward_components:
+                reward_term_key(component)
         self._iteration = iteration
         self._train_time = train_time
         self._collector_wait_time = collector_wait_time
@@ -535,19 +523,15 @@ class OffPolicyLogger(BaseTrainingLogger):
         self._iteration_time = iteration_time
         self._has_iteration_extra_info = extra_info is not None
         if extra_info:
-            self._throughput_steps = int(extra_info.get("throughput_steps", 0))
-            steps_per_sec = extra_info.get("steps_per_sec")
-            self._steps_per_sec_override = (
+            self._throughput_env_steps = int(extra_info.get("throughput_steps", 0))
+            steps_per_sec = extra_info.get("env_steps_per_sec")
+            self._env_steps_per_sec_override = (
                 float(steps_per_sec) if steps_per_sec is not None else None
             )
-            samples_per_sec = extra_info.get("learner_samples_per_sec")
-            self._samples_per_sec_override = (
-                float(samples_per_sec) if samples_per_sec is not None else None
-            )
-            collector_active_steps_per_sec = extra_info.get("collector_active_steps_per_sec")
-            self._collector_active_steps_per_sec = (
-                float(collector_active_steps_per_sec)
-                if collector_active_steps_per_sec is not None
+            learner_replay_rows_per_sec = extra_info.get("learner_replay_rows_per_sec")
+            self._learner_replay_rows_per_sec_override = (
+                float(learner_replay_rows_per_sec)
+                if learner_replay_rows_per_sec is not None
                 else None
             )
             self._batch_size_per_rank = int(extra_info.get("batch_size_per_rank", 0))
@@ -556,156 +540,87 @@ class OffPolicyLogger(BaseTrainingLogger):
                 self._effective_batch_size = self._batch_size_per_rank
             if self._batch_size_per_rank <= 0 and self._effective_batch_size > 0:
                 self._batch_size_per_rank = self._effective_batch_size
-            self._replay_samples_per_iter = int(extra_info.get("replay_samples_per_iter", 0))
-            self._learner_samples_per_iter = int(extra_info.get("learner_samples_per_iter", 0))
-            if self._replay_samples_per_iter <= 0:
-                self._replay_samples_per_iter = self._learner_samples_per_iter
+            self._learner_replay_rows_per_iter = int(
+                extra_info.get("learner_replay_rows_per_iter", 0)
+            )
         else:
-            self._throughput_steps = 0
-            self._steps_per_sec_override = None
-            self._samples_per_sec_override = None
-            self._collector_active_steps_per_sec = None
+            self._throughput_env_steps = 0
+            self._env_steps_per_sec_override = None
+            self._learner_replay_rows_per_sec_override = None
             self._batch_size_per_rank = 0
             self._effective_batch_size = 0
-            self._replay_samples_per_iter = 0
-            self._learner_samples_per_iter = 0
+            self._learner_replay_rows_per_iter = 0
         if metrics:
             self._latest_metrics.update(metrics)
-        if reward is not None:
-            self._reward_history.append(reward)
         if reward_components:
             self._latest_reward_components = reward_components
         self._status = "Training"
+        scalars = self._build_backend_scalars(
+            iteration, metrics, return_mean_ep100, reward_components
+        )
         if self._should_log_backend(iteration):
-            self._backend_log_step(
-                iteration,
-                metrics,
-                reward,
-                reward_metrics,
-                reward_components,
-                train_time,
-            )
+            self._write_backend_scalars(scalars, iteration)
         self._record_terminal_sample(
             metrics=metrics,
-            reward=reward,
+            reward=self._reward_history[-1] if self._reward_history else None,
             reward_components=reward_components,
         )
 
-    def _backend_log_step(
+    def _build_backend_scalars(
         self,
         iteration: int,
         metrics: dict[str, float] | None,
-        reward: float | None,
-        reward_metrics: dict[str, float] | None,
+        return_mean_ep100: float | None,
         reward_components: dict[str, float] | None,
-        train_time: float,
     ):
-        global_step = self._total_steps if self._total_steps > 0 else iteration
-        iter_steps_per_sec = self._get_iter_steps_per_sec()
-        effective_samples_per_sec = self._get_effective_samples_per_sec()
-        iter_wall_time = self._get_iter_wall_time()
-        learner_other_time = self._get_learner_other_time()
-        learner_accounted_time = self._get_learner_accounted_time()
-        learner_timing_ms = {
-            key: seconds * 1000 for key, seconds in self._learner_phase_times().items()
+        iter_steps_per_sec = self._get_iter_env_steps_per_sec()
+        iter_wall_time = self._get_measured_iter_wall_time()
+        learner_timing_scalars = {
+            key: (seconds if key == "Perf/learning_time" else seconds * 1000)
+            for key, seconds in self._learner_phase_times().items()
         }
-        learner_timing_ms.update(
+        learner_timing_scalars.update(
             {key: seconds * 1000 for key, seconds in self._learner_detail_times().items()}
         )
-        learner_timing_ms[_LEARNER_OTHER_TIMING_SPEC[0]] = learner_other_time * 1000
-        collector_cycle_ms = self._get_collector_cycle_ms()
+        scalars: dict[str, Any] = {}
+        if self._total_steps > 0:
+            _set_backend_scalar(scalars, "Train/iteration", float(iteration))
+        if metrics:
+            for tag, value in metrics.items():
+                _set_backend_scalar(scalars, tag, value)
+        if return_mean_ep100 is not None:
+            _set_backend_scalar(scalars, "Train/mean_reward", float(return_mean_ep100))
+        if reward_components:
+            for key, value in reward_components.items():
+                _set_backend_scalar(scalars, reward_term_key(key), float(value))
+        if self._mean_ep_length > 0:
+            _set_backend_scalar(scalars, "Train/mean_episode_length", self._mean_ep_length)
+        if self._timeout_rate is not None:
+            _set_backend_scalar(scalars, "Episode/timeout_rate", self._timeout_rate)
+        for key, value in self._collector_timing.items():
+            if key == "rollout_ms":
+                _set_backend_scalar(scalars, "Perf/collection_time", value / 1000.0)
+            else:
+                _set_backend_scalar(scalars, f"Perf/collector_{key}", value)
+        if iter_steps_per_sec is not None:
+            _set_backend_scalar(scalars, "Perf/total_fps", iter_steps_per_sec)
+        for key, value in learner_timing_scalars.items():
+            _set_backend_scalar(scalars, key, value)
+        if iter_wall_time is not None:
+            _set_backend_scalar(scalars, "Perf/iteration_time", iter_wall_time)
+        validate_metric_tags(scalars)
+        return scalars
 
+    def _write_backend_scalars(self, scalars: dict[str, Any], iteration: int) -> None:
+        global_step = self._total_steps if self._total_steps > 0 else iteration
         if self._tb_writer:
-            tb_scalars: list[tuple[str, Any]] = []
-            if metrics:
-                for key, value in metrics.items():
-                    tb_scalars.append((_metric_backend_key(key), value))
-            if reward is not None:
-                tb_scalars.append(("reward/mean", reward))
-            if reward_metrics:
-                for key, value in reward_metrics.items():
-                    tb_scalars.append((_reward_backend_key(key), value))
-            if reward_components:
-                for key, value in reward_components.items():
-                    tb_scalars.append((_reward_backend_key(key), value))
-            if self._mean_ep_length > 0:
-                tb_scalars.append(("episode/length", self._mean_ep_length))
-            tb_scalars.append(("episode/timeout_rate", self._timeout_rate))
-            for key, value_ms in learner_timing_ms.items():
-                tb_scalars.append((key, value_ms))
-            for key, value in self._collector_timing.items():
-                tb_scalars.append((f"timing/collector_{key}", value))
-            if iter_steps_per_sec is not None:
-                tb_scalars.append(("perf/steps_per_sec", iter_steps_per_sec))
-            if self._collector_active_steps_per_sec is not None:
-                tb_scalars.append(
-                    (
-                        "perf/collector_active_steps_per_sec",
-                        self._collector_active_steps_per_sec,
-                    )
-                )
-            if effective_samples_per_sec is not None:
-                tb_scalars.append(
-                    (
-                        "perf/effective_samples_per_sec",
-                        effective_samples_per_sec,
-                    )
-                )
-            tb_scalars.append(("perf/iter_ms", iter_wall_time * 1000))
-            tb_scalars.append(("perf/learner_train_pct", self._get_iter_pct(train_time)))
-            tb_scalars.append(
-                (
-                    "perf/learner_accounted_pct",
-                    self._get_iter_pct(learner_accounted_time),
-                )
-            )
-            tb_scalars.append(
-                (
-                    "perf/learner_other_pct",
-                    self._get_iter_pct(learner_other_time),
-                )
-            )
-            if collector_cycle_ms is not None:
-                tb_scalars.append(("perf/collector_cycle_ms", collector_cycle_ms))
-            self._write_tb_scalars(tb_scalars, global_step)
+            self._write_tb_scalars(list(scalars.items()), global_step)
 
         if self._wandb_run:
             wandb = _load_wandb()
             if wandb is None:
                 return
-            log_dict: dict[str, Any] = {"iteration": iteration}
-            if metrics:
-                for key, value in metrics.items():
-                    log_dict[_metric_backend_key(key)] = value
-            if reward is not None:
-                log_dict["reward/mean"] = reward
-            if reward_metrics:
-                for key, value in reward_metrics.items():
-                    log_dict[_reward_backend_key(key)] = value
-            if reward_components:
-                for key, value in reward_components.items():
-                    log_dict[_reward_backend_key(key)] = value
-            if self._mean_ep_length > 0:
-                log_dict["episode/length"] = self._mean_ep_length
-            log_dict["episode/timeout_rate"] = self._timeout_rate
-            log_dict.update(learner_timing_ms)
-            for key, value in self._collector_timing.items():
-                log_dict[f"timing/collector_{key}"] = value
-            if iter_steps_per_sec is not None:
-                log_dict["perf/steps_per_sec"] = iter_steps_per_sec
-            if self._collector_active_steps_per_sec is not None:
-                log_dict["perf/collector_active_steps_per_sec"] = (
-                    self._collector_active_steps_per_sec
-                )
-            if effective_samples_per_sec is not None:
-                log_dict["perf/effective_samples_per_sec"] = effective_samples_per_sec
-            log_dict["perf/iter_ms"] = iter_wall_time * 1000
-            log_dict["perf/learner_train_pct"] = self._get_iter_pct(train_time)
-            log_dict["perf/learner_accounted_pct"] = self._get_iter_pct(learner_accounted_time)
-            log_dict["perf/learner_other_pct"] = self._get_iter_pct(learner_other_time)
-            if collector_cycle_ms is not None:
-                log_dict["perf/collector_cycle_ms"] = collector_cycle_ms
-            wandb.log(log_dict, step=global_step)
+            wandb.log(scalars, step=global_step)
 
     def log_status(self, status: str):
         self._status = status
@@ -823,7 +738,7 @@ class OffPolicyLogger(BaseTrainingLogger):
         wait_color = "red" if collector_wait_ms > 1.0 else "yellow"
         phase_colors = {
             "Collector Wait": wait_color,
-            "Train": "green",
+            "Learning": "green",
         }
         learner_items = [
             (
@@ -837,7 +752,7 @@ class OffPolicyLogger(BaseTrainingLogger):
         ]
         learner_items.append(
             (
-                _LEARNER_OTHER_TIMING_SPEC[1],
+                _LEARNER_OTHER_TIMING_LABEL,
                 _fmt_phase(_scalar("learner_other_time", self._get_learner_other_time())),
             )
         )
@@ -889,7 +804,7 @@ class OffPolicyLogger(BaseTrainingLogger):
                 value_text = f"{value:>7.1f}ms  {pct:>3.0f}%"
             collector_items.append((label, value_text))
         buffer_size = snapshot.buffer_size if snapshot is not None else self._buffer_size
-        timeout_rate = _scalar("timeout_rate", self._timeout_rate)
+        timeout_rate = _scalar("timeout_rate", 0.0)
         batch_size_per_rank = (
             snapshot.batch_size_per_rank if snapshot is not None else self._batch_size_per_rank
         )

@@ -94,6 +94,10 @@ contract, and the *new algorithm recipe* section in
 [`AGENTS.md`](AGENTS.md) for how to plug in a custom algorithm via
 `runtime_resolver` without forking.
 
+The breaking canonical TensorBoard/W&B field contract and the historical
+old-to-new migration table are documented in
+[`docs/metrics.md`](docs/metrics.md).
+
 ## Design contract
 
 `uni_rl` does **not** depend on any simulator or environment library.

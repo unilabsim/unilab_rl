@@ -16,8 +16,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unaffected; only TensorBoard/wandb writes are gated, and the final iteration
   is always logged.
 
+### Changed
+
+- Added a canonical TensorBoard/wandb metric schema with explicit owners, units,
+  aggregation windows, DP reductions, and step axes. Fields already available in
+  upstream RSL-RL use its tags verbatim; extensions stay in the terse `Train`,
+  `Loss`, `Policy`, `Episode`, and `Perf` groups. Learners emit canonical source
+  keys directly, while retired keys fail closed. APPO now also emits the
+  upstream-aligned `Policy/mean_std` actor diagnostic. Redundant derived
+  percentages, cycle totals, residual timing, and the double-smoothed runner
+  return chart are no longer persisted. Historical event files are not rewritten;
+  the migration reference is in `docs/metrics.md`.
+- Collector episode returns now enter logger state only at the logged step;
+  collector counter updates no longer duplicate reward-history entries. DP
+  metadata states the exact per-rank mean reduction for episode and reward-term
+  fields.
+
+### Removed
+
+- Removed ambiguous logger source aliases and the `reward`/`reward_metrics`
+  interfaces. Runner 10-report reward smoothing is checkpoint state only; the
+  persisted episode-return field is the collector's 100-episode mean.
+- Removed constant configuration charts: staging-pool capacity and the disabled
+  reward-normalization scale are no longer persisted as scalars. The APPO
+  update count is derived from its configured epoch/minibatch schedule instead
+  of being charted.
+- Removed derived or semantically mismatched charts: APPO staging-pool occupancy,
+  active collector throughput, learner replay throughput, and FastSAC's
+  pre-update action standard deviation are no longer persisted. Async reward
+  terms are now averaged across the collector reports in each learner iteration.
+
 ### Fixed
 
+- The final on-policy iteration is forced to log on upstream RSL-RL's zero-based
+  iteration axis when `log_interval` does not divide the final iteration.
 - TensorBoard scalar writes are now batched into a single event record per
   training step. Previously each `add_scalar` call produced one record, and
   the writer thread's per-record open/write/close saturated the async queue

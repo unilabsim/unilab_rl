@@ -417,10 +417,10 @@ class APPOLearner:
             rhos = torch.exp(target_log_probs - behavior_log_probs)
             rho_sample = _sample_tensor_for_metric(rhos)
             batch_dict["_appo_process_metrics"] = {
-                "vtrace/rho_clip_fraction": float(
+                "Train/vtrace_rho_clip_fraction": float(
                     (rhos > float(self.vtrace_clip_rho)).float().mean().item()
                 ),
-                "vtrace/rho_raw_p99": float(torch.quantile(rho_sample, 0.99).item()),
+                "Train/vtrace_rho_p99": float(torch.quantile(rho_sample, 0.99).item()),
             }
 
         # V-trace targets and advantages
@@ -473,9 +473,8 @@ class APPOLearner:
         mean_surrogate_loss = 0.0
         mean_value_loss = 0.0
         mean_entropy = 0.0
-        mean_kl = 0.0
         mean_clip_fraction = 0.0
-        mean_behavior_to_current_kl = 0.0
+        mean_behavior_to_current_log_prob_delta = 0.0
         mean_target_to_current_kl = 0.0
         mean_global_grad_norm = 0.0
         num_updates = 0
@@ -527,7 +526,6 @@ class APPOLearner:
 
                         self._update_adaptive_learning_rate(kl_mean_value)
 
-                        mean_kl += kl_mean_value
                         mean_target_to_current_kl += kl_mean_value
 
                 self.optimizer.zero_grad(set_to_none=True)
@@ -538,7 +536,9 @@ class APPOLearner:
 
                 with torch.inference_mode():
                     clip_fraction = (torch.abs(ratio - 1.0) > self.clip_param).float().mean().item()
-                    behavior_to_current_kl = (behavior_logp_mini - current_log_prob).mean().item()
+                    behavior_to_current_log_prob_delta = (
+                        (behavior_logp_mini - current_log_prob).mean().item()
+                    )
                     if kl_mean_value is None:
                         kl_mean_value = float(kl_mean.item())
                         mean_target_to_current_kl += kl_mean_value
@@ -547,7 +547,7 @@ class APPOLearner:
                 mean_surrogate_loss += surrogate_loss.item()
                 mean_entropy += entropy.item()
                 mean_clip_fraction += float(clip_fraction)
-                mean_behavior_to_current_kl += float(behavior_to_current_kl)
+                mean_behavior_to_current_log_prob_delta += float(behavior_to_current_log_prob_delta)
                 mean_global_grad_norm += global_grad_norm
                 num_updates += 1
 
@@ -558,21 +558,20 @@ class APPOLearner:
         num_updates = max(num_updates, 1)
         final_lr = float(self.learning_rate)
         self.learning_rate = final_lr
+        policy_mean_std = float(self.actor.output_std.detach().mean().item())
 
         metrics = {
-            "surrogate_loss": mean_surrogate_loss / num_updates,
-            "value_loss": mean_value_loss / num_updates,
-            "entropy": mean_entropy / num_updates,
-            "kl": mean_kl / num_updates if self.schedule == "adaptive" else 0.0,
-            "loss/policy_loss": mean_surrogate_loss / num_updates,
-            "loss/value_loss": mean_value_loss / num_updates,
-            "policy/entropy": mean_entropy / num_updates,
-            "ppo/approx_kl": mean_target_to_current_kl / num_updates,
-            "ppo/clip_fraction": mean_clip_fraction / num_updates,
-            "grad/global_norm": mean_global_grad_norm / num_updates,
-            "optim/learning_rate": final_lr,
-            "policy_kl/behavior_to_current_kl": mean_behavior_to_current_kl / num_updates,
-            "appo/updates_executed": float(num_updates),
+            "Loss/surrogate": mean_surrogate_loss / num_updates,
+            "Loss/value": mean_value_loss / num_updates,
+            "Loss/entropy": mean_entropy / num_updates,
+            "Train/approx_kl": mean_target_to_current_kl / num_updates,
+            "Train/clip_fraction": mean_clip_fraction / num_updates,
+            "Train/global_gradient_norm": mean_global_grad_norm / num_updates,
+            "Loss/learning_rate": final_lr,
+            "Policy/mean_std": policy_mean_std,
+            "Train/behavior_to_current_log_prob_delta": (
+                mean_behavior_to_current_log_prob_delta / num_updates
+            ),
         }
         metrics.update(batch_dict.get("_appo_process_metrics", {}))
         return metrics

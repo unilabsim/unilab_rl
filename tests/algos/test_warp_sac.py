@@ -13,6 +13,7 @@ from uni_rl.algos.flash_sac.learner import FlashSACLearner
 from uni_rl.algos.warp_sac.double_buffer import build_warpsac_double_buffer_runner
 from uni_rl.algos.warp_sac.learner import WarpSACLearner
 from uni_rl.algos.warp_sac.replay import WarpSACReplayPipeline, _biased_replay_indices
+from uni_rl.logging.metric_schema import normalize_metric_map
 from uni_rl.offpolicy.double_buffer_runner import algo_display_name
 from uni_rl.offpolicy.worker import sample_offpolicy_actions
 
@@ -90,8 +91,16 @@ def test_warpsac_learner_inherits_flashsac_training_interface() -> None:
     }
 
     assert isinstance(learner, FlashSACLearner)
-    assert learner.update_critic(batch)
-    assert learner.update_actor(batch)
+    critic_metrics = learner.update_critic(batch)
+    actor_metrics = learner.update_actor(batch)
+    assert set(critic_metrics) == {"Loss/critic", "Train/reward_scale_std"}
+    assert set(actor_metrics) == {
+        "Loss/actor",
+        "Loss/entropy",
+        "Policy/temperature",
+        "Loss/temperature",
+    }
+    normalize_metric_map({**critic_metrics, **actor_metrics})
 
 
 def test_warpsac_can_disable_inherited_parameter_normalization() -> None:

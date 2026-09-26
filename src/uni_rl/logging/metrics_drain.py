@@ -10,20 +10,41 @@ from __future__ import annotations
 
 import sys
 from collections import deque
+from dataclasses import dataclass, field
 from typing import Any
+
+
+@dataclass
+class RewardComponentWindow:
+    """Aggregate reward-term reports between learner iterations."""
+
+    _sums: dict[str, float] = field(default_factory=dict)
+    _counts: dict[str, int] = field(default_factory=dict)
+
+    def update(self, components: dict[str, float]) -> None:
+        for term, value in components.items():
+            self._sums[term] = self._sums.get(term, 0.0) + float(value)
+            self._counts[term] = self._counts.get(term, 0) + 1
+
+    def take(self) -> dict[str, float]:
+        if not self._counts:
+            return {}
+        values = {term: total / self._counts[term] for term, total in self._sums.items()}
+        self._sums.clear()
+        self._counts.clear()
+        return values
 
 
 def drain_collector_metrics(
     queue: Any,
     reward_history: deque,
-    reward_components: dict,
+    reward_components: RewardComponentWindow,
     logger: Any,
     trace_recorder: Any | None = None,
     *,
     runner_label: str,
     raise_on_collector_error: bool,
     require_buffer_size: bool,
-    log_collector_reward: bool = True,
 ) -> None:
     """Drain all pending collector metrics messages and dispatch them to the logger.
 
@@ -48,33 +69,22 @@ def drain_collector_metrics(
             break
 
         try:
-            updated_reward = False
             if "runtime_manifest" in metrics:
                 logger.update_runtime_manifest(metrics["runtime_manifest"])
-            if "mean_ep_reward" in metrics:
-                reward_history.append(metrics["mean_ep_reward"])
-                updated_reward = True
+            if "return_mean_ep100" in metrics:
+                reward_history.append(metrics["return_mean_ep100"])
             if "reward_components" in metrics:
-                reward_components.clear()
                 reward_components.update(metrics["reward_components"])
-            if "mean_ep_length" in metrics:
-                logger.update_ep_length(metrics["mean_ep_length"])
+            if "mean_episode_length" in metrics:
+                logger.update_mean_episode_length(metrics["mean_episode_length"])
             if "collector_timing_ms" in metrics:
                 logger.update_collector_timing(metrics["collector_timing_ms"])
-            active_steps_per_sec = metrics.get("collector_active_steps_per_sec")
-            if active_steps_per_sec is not None:
-                logger.update_collector_active_steps_per_sec(float(active_steps_per_sec))
             if "timeout_rate" in metrics:
                 logger.update_timeout_rate(float(metrics["timeout_rate"]))
             if "total_steps" in metrics and (not require_buffer_size or "buffer_size" in metrics):
                 logger.log_collector(
                     metrics["total_steps"],
                     metrics.get("buffer_size", 0),
-                    (
-                        metrics.get("mean_ep_reward", 0.0)
-                        if updated_reward and log_collector_reward
-                        else 0.0
-                    ),
                 )
             if trace_recorder and "trace_events" in metrics:
                 trace_recorder.extend(metrics["trace_events"])

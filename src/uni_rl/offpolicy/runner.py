@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Iterable
 from typing import Any
 
@@ -10,7 +9,7 @@ from uni_rl.algos.common.device import get_env_dims
 from uni_rl.env_contract import EnvFactory
 from uni_rl.ipc.async_runner import AsyncRunner
 from uni_rl.logging import OffPolicyLogger
-from uni_rl.logging.metrics_drain import drain_collector_metrics
+from uni_rl.logging.metrics_drain import RewardComponentWindow, drain_collector_metrics
 from uni_rl.offpolicy.actor_adapter import import_actor_adapter_modules
 from uni_rl.utils.device import get_default_device
 from uni_rl.utils.nan_guard import NanGuardCfg
@@ -48,20 +47,8 @@ def build_offpolicy_sample_info(
     return {
         "batch_size_per_rank": batch_size_per_rank,
         "effective_batch_size": batch_size_per_rank,
-        "replay_samples_per_iter": batch_size_per_rank * updates_per_step,
-        "learner_samples_per_iter": batch_size_per_rank * updates_per_step,
+        "learner_replay_rows_per_iter": batch_size_per_rank * updates_per_step,
     }
-
-
-def build_reward_comparison_metrics(
-    reward_history: deque,
-    smoothed_reward: float,
-) -> dict[str, float]:
-    """Return the latest collector-side 100-episode mean for reward comparison."""
-    del smoothed_reward
-    if not reward_history:
-        return {}
-    return {"mean_ep100": float(reward_history[-1])}
 
 
 def update_reward_stats_from_replay(
@@ -230,11 +217,9 @@ class OffPolicyRunner(AsyncRunner):
     def _drain_metrics(
         queue,
         reward_history,
-        reward_components,
+        reward_components: RewardComponentWindow,
         logger,
         trace_recorder=None,
-        *,
-        log_collector_reward: bool = True,
     ):
         drain_collector_metrics(
             queue,
@@ -245,5 +230,4 @@ class OffPolicyRunner(AsyncRunner):
             runner_label="OffPolicyRunner",
             raise_on_collector_error=True,
             require_buffer_size=True,
-            log_collector_reward=log_collector_reward,
         )

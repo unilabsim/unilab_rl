@@ -9,6 +9,7 @@ import torch
 
 import uni_rl.algos.appo.runner as appo_runner_module
 from uni_rl.algos.appo.runner import APPORunner
+from uni_rl.logging.metrics_drain import RewardComponentWindow
 
 
 @pytest.fixture(autouse=True)
@@ -164,7 +165,6 @@ class _FakeLogger:
         self.init_kwargs = dict(kwargs)
         self._total_steps = 0
         self._mean_ep_length = 0.0
-        self._collector_active_steps_per_sec = None
         self.step_calls: list[dict] = []
         _FakeLogger.last_instance = self
 
@@ -183,21 +183,15 @@ class _FakeLogger:
     def finish(self) -> None:
         pass
 
-    def update_staging_pool(self, current_len: int, max_size: int) -> None:
-        del current_len, max_size
-
-    def log_collector(self, total_steps: int, buffer_size: int, mean_reward: float = 0.0) -> None:
-        del buffer_size, mean_reward
+    def log_collector(self, total_steps: int, buffer_size: int) -> None:
+        del buffer_size
         self._total_steps = total_steps
 
-    def update_ep_length(self, mean_ep_length: float) -> None:
-        self._mean_ep_length = mean_ep_length
+    def update_mean_episode_length(self, mean_episode_length: float) -> None:
+        self._mean_ep_length = mean_episode_length
 
     def update_collector_timing(self, timing_ms: dict[str, float]) -> None:
         del timing_ms
-
-    def update_collector_active_steps_per_sec(self, steps_per_sec: float) -> None:
-        self._collector_active_steps_per_sec = steps_per_sec
 
     def update_done_rates(self, timeout_rate: float, terminated_rate: float) -> None:
         del timeout_rate, terminated_rate
@@ -355,6 +349,13 @@ def test_appo_runner_logs_learner_timing_for_fps_inputs(
     )
     monkeypatch.setattr(runner, "_start_collector", lambda *args, **kwargs: None)
 
+    def drain_one_collector_report(queue, reward_history, reward_components, logger):
+        del queue, reward_components
+        reward_history.append(4.0)
+        logger.log_collector(8, 0)
+
+    monkeypatch.setattr(APPORunner, "_drain_metrics", staticmethod(drain_one_collector_report))
+
     runner.learn(max_iterations=1, save_interval=0, log_dir=str(tmp_path))
 
     logger = _FakeLogger.last_instance
@@ -374,9 +375,11 @@ def test_appo_runner_logs_learner_timing_for_fps_inputs(
     assert step["learner_replay_stage_time"] >= 0.0
     assert step["weight_sync_time"] >= 0.0
     assert step["extra_info"]["throughput_steps"] == 8
-    assert "collector_active_steps_per_sec" in step["extra_info"]
-    assert step["metrics"]["rollouts_read"] == 1.0
-    assert step["metrics"]["staging_pool_len"] == 1.0
+    assert "collector_active_env_steps_per_sec" not in step["extra_info"]
+    assert step["return_mean_ep100"] == pytest.approx(4.0)
+    assert step["metrics"]["Train/rollouts_read"] == 1.0
+    assert "Train/staging_pool_size" not in step["metrics"]
+    assert step["metrics"]["Train/ring_available_slots"] == 1.0
 
 
 def test_appo_runner_stages_multiple_rollouts_without_runner_cat(
@@ -435,8 +438,7 @@ def test_appo_runner_stages_multiple_rollouts_without_runner_cat(
     assert batch["actions_log_prob"].shape == (4, 4)
     assert batch["last_obs"].shape == (4, 4)
     assert torch.equal(torch.unique(batch["observations"]), torch.tensor([1.0, 2.0]))
-    assert logger.step_calls[0]["metrics"]["staging_pool_len"] == 2.0
-    assert logger.step_calls[0]["metrics"]["rollouts_read"] == 2.0
+    assert logger.step_calls[0]["metrics"]["Train/rollouts_read"] == 2.0
 
 
 def test_appo_runner_fails_fast_when_collector_dies_during_wait(
@@ -502,11 +504,10 @@ def test_appo_runner_fails_fast_when_collector_dies_during_wait(
 class _DrainFakeLogger:
     def __init__(self) -> None:
         self.statuses: list[str] = []
-        self.collector_calls: list[tuple[int, int, float]] = []
+        self.collector_calls: list[tuple[int, int]] = []
         self.ep_lengths: list[float] = []
         self.timeout_rates: list[float] = []
         self.timing: list[dict[str, float]] = []
-        self.active_steps_per_sec: list[float] = []
         self.manifests: list[dict] = []
 
     def log_status(self, status: str) -> None:
@@ -515,20 +516,17 @@ class _DrainFakeLogger:
     def update_runtime_manifest(self, manifest: dict) -> None:
         self.manifests.append(dict(manifest))
 
-    def update_ep_length(self, mean_ep_length: float) -> None:
-        self.ep_lengths.append(mean_ep_length)
+    def update_mean_episode_length(self, mean_episode_length: float) -> None:
+        self.ep_lengths.append(mean_episode_length)
 
     def update_collector_timing(self, timing_ms: dict[str, float]) -> None:
         self.timing.append(dict(timing_ms))
 
-    def update_collector_active_steps_per_sec(self, steps_per_sec: float) -> None:
-        self.active_steps_per_sec.append(steps_per_sec)
-
     def update_timeout_rate(self, timeout_rate: float) -> None:
         self.timeout_rates.append(timeout_rate)
 
-    def log_collector(self, total_steps: int, buffer_size: int, mean_reward: float = 0.0) -> None:
-        self.collector_calls.append((total_steps, buffer_size, mean_reward))
+    def log_collector(self, total_steps: int, buffer_size: int) -> None:
+        self.collector_calls.append((total_steps, buffer_size))
 
 
 def test_drain_metrics_swallows_collector_error(capsys: pytest.CaptureFixture) -> None:
@@ -538,7 +536,7 @@ def test_drain_metrics_swallows_collector_error(capsys: pytest.CaptureFixture) -
 
     # Unlike OffPolicyRunner, APPO reports the collector error on stderr and
     # keeps the drain loop alive instead of raising.
-    APPORunner._drain_metrics(metrics, deque(maxlen=10), {}, logger)
+    APPORunner._drain_metrics(metrics, deque(maxlen=10), RewardComponentWindow(), logger)
 
     assert any("collector boom" in status for status in logger.statuses)
     assert "Collector process failed: collector boom" in capsys.readouterr().err
@@ -549,26 +547,37 @@ def test_drain_metrics_dispatches_shared_message_fields() -> None:
     metrics.put(
         {
             "total_steps": 128,
-            "mean_ep_reward": 1.5,
-            "mean_ep_length": 42.0,
+            "return_mean_ep100": 1.5,
+            "mean_episode_length": 42.0,
             "timeout_rate": 0.25,
-            "collector_timing_ms": {"rollout": 3.0},
-            "collector_active_steps_per_sec": 1000,
+            "collector_timing_ms": {"rollout_ms": 3.0},
             "reward_components": {"task": 2.0},
         }
     )
     reward_history: deque = deque(maxlen=10)
-    reward_components: dict = {}
+    reward_components = RewardComponentWindow()
     logger = _DrainFakeLogger()
 
     APPORunner._drain_metrics(metrics, reward_history, reward_components, logger)
 
     # APPO uses shared memory, so buffer_size is always 0 even though the
     # message carries no buffer_size key.
-    assert logger.collector_calls == [(128, 0, 1.5)]
+    assert logger.collector_calls == [(128, 0)]
     assert logger.ep_lengths == [42.0]
     assert logger.timeout_rates == [0.25]
-    assert logger.timing == [{"rollout": 3.0}]
-    assert logger.active_steps_per_sec == [1000.0]
+    assert logger.timing == [{"rollout_ms": 3.0}]
     assert list(reward_history) == [1.5]
-    assert reward_components == {"task": 2.0}
+    assert reward_components.take() == {"task": 2.0}
+
+
+def test_drain_metrics_averages_reward_components_across_reports() -> None:
+    first = queue.Queue()
+    first.put({"reward_components": {"task": 1.0}})
+    second = queue.Queue()
+    second.put({"reward_components": {"task": 3.0}})
+    window = RewardComponentWindow()
+
+    APPORunner._drain_metrics(first, deque(maxlen=10), window, _DrainFakeLogger())
+    APPORunner._drain_metrics(second, deque(maxlen=10), window, _DrainFakeLogger())
+
+    assert window.take() == {"task": 2.0}

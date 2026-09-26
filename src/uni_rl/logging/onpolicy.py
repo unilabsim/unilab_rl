@@ -9,10 +9,24 @@ from rich.table import Table
 from rich.text import Text
 
 from uni_rl.logging.common import BaseTrainingLogger, _fmt_number, _load_wandb
+from uni_rl.logging.metric_schema import (
+    LOGGER_OWNED_METRICS,
+    normalize_metric_map,
+    reward_term_key,
+    validate_metric_tags,
+)
+
+
+def _set_backend_scalar(scalars: dict[str, Any], tag: str, value: Any) -> None:
+    """Insert one canonical scalar and fail closed on tag collisions."""
+
+    if tag in scalars:
+        raise ValueError(f"duplicate backend metric tag {tag!r}")
+    scalars[tag] = value
 
 
 class OnPolicyLogger(BaseTrainingLogger):
-    """Rich logger for on-policy RL (PPO, A2C, etc)."""
+    """Rich logger for on-policy RL using upstream RSL-RL's zero-based axis."""
 
     def __init__(
         self,
@@ -57,72 +71,87 @@ class OnPolicyLogger(BaseTrainingLogger):
     def finish(self, *, title: str = "Training Summary", extra_summary: str = ""):
         super().finish(title=title, extra_summary=extra_summary)
 
+    def _should_log_backend(self, iteration: int) -> bool:
+        """Keep the final upstream iteration on the zero-based RSL-RL axis."""
+
+        final_iteration = max(self.max_iterations - 1, 0)
+        return iteration % self._log_interval == 0 or iteration >= final_iteration
+
     def log_step(
         self,
         iteration: int,
         metrics: dict[str, float] | None = None,
-        reward: float | None = None,
+        return_mean_ep100: float | None = None,
         reward_components: dict[str, float] | None = None,
         collect_time: float = 0.0,
         train_time: float = 0.0,
     ):
+        if metrics:
+            metrics = normalize_metric_map(metrics)
+            if "Train/iteration" in metrics:
+                raise ValueError(
+                    "OnPolicyLogger uses iteration as the step axis; do not emit Train/iteration"
+                )
+            owned = sorted(set(metrics) & LOGGER_OWNED_METRICS)
+            if owned:
+                names = ", ".join(owned)
+                raise ValueError(
+                    f"logger-owned metrics must use dedicated log_step inputs: {names}"
+                )
+        if reward_components:
+            for component in reward_components:
+                reward_term_key(component)
         self._iteration = iteration
         self._collect_time = collect_time
         self._train_time = train_time
 
         if metrics:
             self._latest_metrics.update(metrics)
-        if reward is not None:
-            self._reward_history.append(reward)
+        if return_mean_ep100 is not None:
+            self._reward_history.append(return_mean_ep100)
         if reward_components:
             self._latest_reward_components = reward_components
 
         self._refresh()
+        scalars = self._build_backend_scalars(metrics, return_mean_ep100, reward_components)
         if self._should_log_backend(iteration):
-            self._backend_log_step(iteration, metrics, reward, reward_components)
+            self._write_backend_scalars(scalars, iteration)
 
-    def _backend_log_step(
+    def _build_backend_scalars(
         self,
-        iteration: int,
         metrics: dict[str, float] | None,
-        reward: float | None,
+        return_mean_ep100: float | None,
         reward_components: dict[str, float] | None,
     ):
+        scalars: dict[str, Any] = {}
+        if metrics:
+            for tag, value in metrics.items():
+                _set_backend_scalar(scalars, tag, value)
+        if return_mean_ep100 is not None:
+            _set_backend_scalar(scalars, "Train/mean_reward", float(return_mean_ep100))
+        if reward_components:
+            for key, value in reward_components.items():
+                _set_backend_scalar(scalars, reward_term_key(key), float(value))
+        if self._mean_ep_length > 0:
+            _set_backend_scalar(scalars, "Train/mean_episode_length", self._mean_ep_length)
+        iteration_time = self._collect_time + self._train_time
+        if iteration_time > 0:
+            throughput = self.num_envs * self.num_steps / iteration_time
+            _set_backend_scalar(scalars, "Perf/total_fps", throughput)
+        _set_backend_scalar(scalars, "Perf/collection_time", self._collect_time)
+        _set_backend_scalar(scalars, "Perf/learning_time", self._train_time)
+        validate_metric_tags(scalars)
+        return scalars
+
+    def _write_backend_scalars(self, scalars: dict[str, Any], iteration: int) -> None:
         if self._tb_writer:
-            tb_scalars: list[tuple[str, Any]] = []
-            if metrics:
-                for k, v in metrics.items():
-                    tb_scalars.append((f"train/{k}", v))
-            if reward is not None:
-                tb_scalars.append(("reward/mean", reward))
-            if reward_components:
-                for k, v in reward_components.items():
-                    tb_scalars.append((f"reward/{k}", v))
-            if self._mean_ep_length > 0:
-                tb_scalars.append(("episode/length", self._mean_ep_length))
-            tb_scalars.append(("perf/collect_time_ms", self._collect_time * 1000))
-            tb_scalars.append(("perf/train_time_ms", self._train_time * 1000))
-            self._write_tb_scalars(tb_scalars, iteration)
+            self._write_tb_scalars(list(scalars.items()), iteration)
 
         if self._wandb_run:
             wandb = _load_wandb()
             if wandb is None:
                 return
-
-            log_dict: dict[str, Any] = {"iteration": iteration}
-            if metrics:
-                for k, v in metrics.items():
-                    log_dict[f"train/{k}"] = v
-            if reward is not None:
-                log_dict["reward/mean"] = reward
-            if reward_components:
-                for k, v in reward_components.items():
-                    log_dict[f"reward/{k}"] = v
-            if self._mean_ep_length > 0:
-                log_dict["episode/length"] = self._mean_ep_length
-            log_dict["perf/collect_time_ms"] = self._collect_time * 1000
-            log_dict["perf/train_time_ms"] = self._train_time * 1000
-            wandb.log(log_dict, step=iteration)
+            wandb.log(scalars, step=iteration)
 
     def _build_display(self) -> Panel:
         header = self._build_compact_header(include_status=True)
