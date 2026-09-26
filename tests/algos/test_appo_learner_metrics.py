@@ -130,13 +130,13 @@ def test_appo_update_emits_only_registered_canonical_metrics():
         "Loss/surrogate",
         "Loss/value",
         "Loss/entropy",
-        "PPO/approx_kl",
-        "PPO/clip_fraction",
+        "Train/approx_kl",
+        "Train/clip_fraction",
         "Train/global_gradient_norm",
         "Loss/learning_rate",
         "Policy/mean_std",
-        "PPO/behavior_to_current_log_prob_delta",
-        "PPO/vtrace_rho_clip_fraction",
-        "PPO/vtrace_rho_p99",
+        "Train/behavior_to_current_log_prob_delta",
+        "Train/vtrace_rho_clip_fraction",
+        "Train/vtrace_rho_p99",
     }
     normalize_metric_map(metrics)

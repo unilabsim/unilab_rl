@@ -80,7 +80,7 @@ def test_schema_is_closed_except_reward_terms() -> None:
     assert "Train/staging_pool_capacity" not in METRIC_SPECS
     assert "Train/updates" not in METRIC_SPECS
     top_level_groups = {tag.split("/", 1)[0] for tag in METRIC_SPECS}
-    assert top_level_groups <= {"Train", "Loss", "Policy", "Episode", "PPO", "Perf"}
+    assert top_level_groups <= {"Train", "Loss", "Policy", "Episode", "Perf"}
     with pytest.raises(ValueError, match="unregistered backend metric tags: timing/retired_ms"):
         validate_metric_tags(["timing/retired_ms"])
 

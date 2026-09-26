@@ -417,10 +417,10 @@ class APPOLearner:
             rhos = torch.exp(target_log_probs - behavior_log_probs)
             rho_sample = _sample_tensor_for_metric(rhos)
             batch_dict["_appo_process_metrics"] = {
-                "PPO/vtrace_rho_clip_fraction": float(
+                "Train/vtrace_rho_clip_fraction": float(
                     (rhos > float(self.vtrace_clip_rho)).float().mean().item()
                 ),
-                "PPO/vtrace_rho_p99": float(torch.quantile(rho_sample, 0.99).item()),
+                "Train/vtrace_rho_p99": float(torch.quantile(rho_sample, 0.99).item()),
             }
 
         # V-trace targets and advantages
@@ -564,12 +564,12 @@ class APPOLearner:
             "Loss/surrogate": mean_surrogate_loss / num_updates,
             "Loss/value": mean_value_loss / num_updates,
             "Loss/entropy": mean_entropy / num_updates,
-            "PPO/approx_kl": mean_target_to_current_kl / num_updates,
-            "PPO/clip_fraction": mean_clip_fraction / num_updates,
+            "Train/approx_kl": mean_target_to_current_kl / num_updates,
+            "Train/clip_fraction": mean_clip_fraction / num_updates,
             "Train/global_gradient_norm": mean_global_grad_norm / num_updates,
             "Loss/learning_rate": final_lr,
             "Policy/mean_std": policy_mean_std,
-            "PPO/behavior_to_current_log_prob_delta": (
+            "Train/behavior_to_current_log_prob_delta": (
                 mean_behavior_to_current_log_prob_delta / num_updates
             ),
         }

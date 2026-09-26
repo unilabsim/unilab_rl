@@ -20,13 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added a canonical TensorBoard/wandb metric schema with explicit owners, units,
   aggregation windows, DP reductions, and step axes. Fields already available in
-  upstream RSL-RL use its tags verbatim; SAC/PPO-only extensions stay in the
-  same terse `Train`, `Loss`, `Policy`, `Episode`, `PPO`, and `Perf` groups.
-  Learners emit canonical source keys directly, while retired keys fail closed.
-  APPO now also emits the upstream-aligned `Policy/mean_std` actor diagnostic.
-  Redundant derived percentages, cycle totals, residual timing, and the
-  double-smoothed runner return chart are no longer persisted. Historical event
-  files are not rewritten; the migration reference is in `docs/metrics.md`.
+  upstream RSL-RL use its tags verbatim; extensions stay in the terse `Train`,
+  `Loss`, `Policy`, `Episode`, and `Perf` groups. Learners emit canonical source
+  keys directly, while retired keys fail closed. APPO now also emits the
+  upstream-aligned `Policy/mean_std` actor diagnostic. Redundant derived
+  percentages, cycle totals, residual timing, and the double-smoothed runner
+  return chart are no longer persisted. Historical event files are not rewritten;
+  the migration reference is in `docs/metrics.md`.
 - Collector episode returns now enter logger state only at the logged step;
   collector counter updates no longer duplicate reward-history entries. DP
   metadata states the exact per-rank mean reduction for episode and reward-term

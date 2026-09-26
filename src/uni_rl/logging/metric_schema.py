@@ -2,7 +2,7 @@
 
 Names that exist in upstream RSL-RL are used verbatim. Algorithm-specific
 fields that RSL-RL does not expose use the same terse top-level groups:
-``Train``, ``Loss``, ``Policy``, ``Episode``, ``PPO``, and ``Perf``.
+``Train``, ``Loss``, ``Policy``, ``Episode``, and ``Perf``.
 """
 
 from __future__ import annotations
@@ -259,35 +259,35 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             "Rollouts drained from the ring in this iteration.",
         ),
         _spec(
-            "PPO/approx_kl",
+            "Train/approx_kl",
             "learner",
             "nats",
             "mean over learner updates emitted in the logged iteration",
             "Target-to-current KL estimate.",
         ),
         _spec(
-            "PPO/clip_fraction",
+            "Train/clip_fraction",
             "learner",
             "ratio",
             "mean over learner updates emitted in the logged iteration",
             "Fraction of PPO ratios outside the clip range.",
         ),
         _spec(
-            "PPO/behavior_to_current_log_prob_delta",
+            "Train/behavior_to_current_log_prob_delta",
             "learner",
             "nats",
             "mean over learner updates emitted in the logged iteration",
             "mean(behavior_log_prob - current_log_prob); signed diagnostic, not KL.",
         ),
         _spec(
-            "PPO/vtrace_rho_clip_fraction",
+            "Train/vtrace_rho_clip_fraction",
             "learner",
             "ratio",
             "mean over processed rollout transitions",
             "Fraction of V-trace importance ratios above the clip bound.",
         ),
         _spec(
-            "PPO/vtrace_rho_p99",
+            "Train/vtrace_rho_p99",
             "learner",
             "ratio",
             "p99 over a bounded rollout-transition sample",

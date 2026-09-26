@@ -3,8 +3,8 @@
 `uni_rl.logging.metric_schema` is the machine-readable source of truth for
 TensorBoard and Weights & Biases scalars. Tags already emitted by upstream
 RSL-RL are used verbatim. Fields RSL-RL does not have use the same terse
-top-level groups (`Train`, `Loss`, `Policy`, `Episode`, `PPO`, and `Perf`) rather
-than introducing algorithm- or runtime-specific namespaces.
+top-level groups (`Train`, `Loss`, `Policy`, `Episode`, and `Perf`) rather than
+introducing algorithm- or runtime-specific namespaces.
 
 Source metrics must already be canonical. There is no legacy translation layer;
 unknown, retired, or mistagged fields fail closed. Fields assembled by a logger
@@ -75,8 +75,9 @@ metrics.
   `Policy/temperature`; estimates and optimizer diagnostics use `Loss/entropy`
   and `Train/*_gradient_norm`. FastSAC's former pre-update action-standard-deviation
   chart is omitted instead of misusing the RSL-RL `Policy/mean_std` semantics.
-- PPO-only diagnostics use `PPO/*`, including the signed
-  `PPO/behavior_to_current_log_prob_delta` rather than calling that value a KL.
+- PPO/APPO update diagnostics use `Train/*` rather than a separate algorithm
+  namespace. In particular, `Train/behavior_to_current_log_prob_delta` remains
+  signed and is not called a KL.
 - APPO runtime state stays under `Train/*`, matching RSL-RL's broad training
   group instead of a custom pipeline namespace.
 - Additional timing fields stay under `Perf/*`. Millisecond fields end in `_ms`;
@@ -134,10 +135,10 @@ new runs do not emit or accept the old keys.
 | `grad/global_norm` | `Train/global_gradient_norm` |
 | `train/actor_grad_norm` | `Train/actor_gradient_norm` |
 | `train/critic_grad_norm` | `Train/critic_gradient_norm` |
-| `train/kl`, `ppo/approx_kl` | `PPO/approx_kl` |
-| `policy_kl/behavior_to_current_kl` | `PPO/behavior_to_current_log_prob_delta` |
-| `vtrace/rho_clip_fraction` | `PPO/vtrace_rho_clip_fraction` |
-| `vtrace/rho_raw_p99` | `PPO/vtrace_rho_p99` |
+| `train/kl`, `ppo/approx_kl` | `Train/approx_kl` |
+| `policy_kl/behavior_to_current_kl` | `Train/behavior_to_current_log_prob_delta` |
+| `vtrace/rho_clip_fraction` | `Train/vtrace_rho_clip_fraction` |
+| `vtrace/rho_raw_p99` | `Train/vtrace_rho_p99` |
 | `appo/updates_executed` | _removed_; derive from the run configuration |
 | `target_q_max`, `train/target_q_max` | `Train/target_q_max` |
 | `target_q_min`, `train/target_q_min` | `Train/target_q_min` |
