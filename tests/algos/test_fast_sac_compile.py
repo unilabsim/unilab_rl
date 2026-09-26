@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 import torch
 
+import uni_rl.algos.fast_sac.learner as fast_sac_module
 from uni_rl.algos.fast_sac.learner import (
     DistributionalQNetwork,
     FastSACLearner,
@@ -94,13 +95,134 @@ def test_fast_sac_compile_targets_training_hot_paths(monkeypatch) -> None:
     assert calls == [
         (
             "FastSACLearner._critic_loss_tensors",
-            {"options": {"triton.cudagraphs": True}},
+            {"dynamic": False, "options": {"triton.cudagraphs": True}},
         ),
         (
             "FastSACLearner._actor_loss_tensors",
-            {"options": {"triton.cudagraphs": True}},
+            {"dynamic": False, "options": {"triton.cudagraphs": True}},
         ),
     ]
+
+
+def test_fast_sac_whole_cycle_uses_max_autotune_without_nested_graphs(monkeypatch) -> None:
+    calls: list[tuple[str, Any]] = []
+
+    def fake_compile(fn: Callable, **kwargs):
+        calls.append((fn.__qualname__, kwargs))
+        return fn
+
+    learner = _small_fast_sac_learner()
+    learner.device = torch.device("cuda")
+    learner._compile_full_update_cycle = True
+    monkeypatch.setattr(
+        fast_sac_module,
+        "get_torch_compile_for_cuda",
+        lambda *_args, **_kwargs: fake_compile,
+    )
+
+    learner._compile_training_methods()
+
+    assert calls == [
+        (
+            "FastSACLearner._critic_loss_tensors",
+            {"dynamic": False, "mode": "max-autotune-no-cudagraphs"},
+        ),
+        (
+            "FastSACLearner._actor_loss_tensors",
+            {"dynamic": False, "mode": "max-autotune-no-cudagraphs"},
+        ),
+    ]
+
+
+def test_fast_sac_gradient_sync_rejects_dp_in_whole_cycle_mode() -> None:
+    learner = _small_fast_sac_learner()
+    learner._compile_full_update_cycle = True
+
+    with pytest.raises(RuntimeError, match="does not support DP fallback"):
+        learner.set_gradient_sync(lambda _parameters: None)
+
+    assert learner.use_update_cycle is True
+
+
+def test_fast_sac_update_cycle_rejects_compatibility_fallback() -> None:
+    learner = _small_fast_sac_learner()
+
+    with pytest.raises(RuntimeError, match="requires the NVIDIA CUDA whole-cycle path"):
+        learner.update_cycle(
+            _small_offpolicy_batch(),
+            updates_per_step=1,
+            policy_frequency=1,
+            target_frequency=1,
+            policy_before_critic=False,
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="NVIDIA CUDA runtime required")
+def test_fast_sac_nvidia_cuda_fails_closed_without_inductor(monkeypatch) -> None:
+    monkeypatch.setattr(
+        fast_sac_module, "get_torch_compile_for_cuda", lambda *_args, **_kwargs: None
+    )
+
+    with pytest.raises(RuntimeError, match="requires CUDA Inductor/Triton"):
+        FastSACLearner(
+            obs_dim=4,
+            action_dim=2,
+            critic_obs_dim=5,
+            device="cuda:0",
+            use_compile=False,
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA runtime selection required")
+def test_fast_sac_hip_cuda_keeps_compatible_compile_opt_out(monkeypatch) -> None:
+    with monkeypatch.context() as hip_runtime:
+        hip_runtime.setattr(torch.version, "hip", "simulated-rocm", raising=False)
+        learner = FastSACLearner(
+            obs_dim=4,
+            action_dim=2,
+            critic_obs_dim=5,
+            device="cuda:0",
+            actor_hidden_dim=8,
+            critic_hidden_dim=8,
+            num_atoms=3,
+            num_q_networks=2,
+            use_layer_norm=False,
+            use_compile=False,
+        )
+
+    assert learner.use_compile is False
+    assert learner.use_update_cycle is False
+    learner.set_gradient_sync(lambda _parameters: None)
+    assert learner._gradient_sync is not None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="NVIDIA CUDA runtime required")
+def test_fast_sac_nvidia_cuda_fails_closed_for_graph_incompatible_options(monkeypatch) -> None:
+    monkeypatch.setattr(
+        fast_sac_module,
+        "get_torch_compile_for_cuda",
+        lambda *_args, **_kwargs: lambda fn: fn,
+    )
+    common = {
+        "obs_dim": 4,
+        "action_dim": 2,
+        "critic_obs_dim": 5,
+        "device": "cuda:0",
+        "actor_hidden_dim": 8,
+        "critic_hidden_dim": 8,
+        "num_atoms": 3,
+        "num_q_networks": 2,
+        "use_layer_norm": False,
+    }
+
+    with pytest.raises(ValueError, match="fp16 GradScaler"):
+        FastSACLearner(**common, use_amp=True, amp_dtype="fp16")
+
+    with pytest.raises(ValueError, match="obs normalization"):
+        FastSACLearner(**common, obs_normalization=True)
+
+    with pytest.raises(ValueError, match="NVTX ranges"):
+        FastSACLearner(**common, nvtx_profile_ranges=True)
 
 
 def test_fast_sac_categorical_projection_preserves_rows() -> None:
@@ -160,6 +282,15 @@ def test_fast_sac_cuda_adamw_optimizers_are_capturable(monkeypatch) -> None:
             calls.append(kwargs)
 
     monkeypatch.setattr(torch.optim, "AdamW", _FakeAdamW)
+    monkeypatch.setattr(
+        fast_sac_module,
+        "get_torch_compile_for_cuda",
+        lambda *_args, **_kwargs: lambda fn: fn,
+    )
+    monkeypatch.setattr(
+        FastSACLearner, "_materialize_capturable_optimizer_state", lambda _self: None
+    )
+    monkeypatch.setattr(FastSACLearner, "_compile_training_methods", lambda _self: None)
 
     for device in ("cuda", torch.device("cuda")):
         FastSACLearner(
@@ -173,7 +304,7 @@ def test_fast_sac_cuda_adamw_optimizers_are_capturable(monkeypatch) -> None:
             num_q_networks=2,
             use_layer_norm=False,
             use_autotune=False,
-            use_compile=False,
+            use_compile=True,
         )
 
     assert len(calls) == 6
@@ -356,9 +487,270 @@ def test_fast_sac_public_updates_can_defer_metric_reads() -> None:
     assert learner.update_actor(batch, read_metrics=False) == {}
 
 
-@pytest.mark.parametrize(("loss_value", "grad_value"), [(float("nan"), 1.0), (1.0, float("nan"))])
+@pytest.mark.parametrize(
+    ("policy_frequency", "target_frequency", "policy_before_critic"),
+    [(2, 3, False), (2, 3, True)],
+)
+def test_fast_sac_update_cycle_matches_runner_composition(
+    policy_frequency: int,
+    target_frequency: int,
+    policy_before_critic: bool,
+) -> None:
+    def seeded_learner() -> FastSACLearner:
+        torch.manual_seed(1234)
+        return _small_fast_sac_learner()
+
+    actual = seeded_learner()
+    expected = seeded_learner()
+    updates_per_step = 4
+    batch = _small_offpolicy_batch()
+    large_batch = {
+        key: value.repeat(updates_per_step, *[1] * (value.ndim - 1)) for key, value in batch.items()
+    }
+
+    rng_state = torch.random.get_rng_state()
+    for update_idx in range(updates_per_step):
+        start = update_idx * batch["obs"].shape[0]
+        end = start + batch["obs"].shape[0]
+        update_batch = {key: value[start:end] for key, value in large_batch.items()}
+        do_actor_update = update_idx % policy_frequency == 0
+        if policy_before_critic and do_actor_update:
+            expected.update_actor(update_batch, read_metrics=False)
+        expected.update_critic(
+            update_batch,
+            read_metrics=update_idx == updates_per_step - 1,
+        )
+        if not policy_before_critic and do_actor_update:
+            expected.update_actor(update_batch, read_metrics=False)
+        if update_idx % target_frequency == 0:
+            expected.soft_update_target()
+
+    torch.random.set_rng_state(rng_state)
+    actual._run_update_cycle_core(
+        large_batch,
+        updates_per_step=updates_per_step,
+        policy_frequency=policy_frequency,
+        target_frequency=target_frequency,
+        policy_before_critic=policy_before_critic,
+    )
+
+    for module_name in ("actor", "qnet", "qnet_target"):
+        actual_state = getattr(actual, module_name).state_dict()
+        expected_state = getattr(expected, module_name).state_dict()
+        for key in actual_state:
+            torch.testing.assert_close(actual_state[key], expected_state[key])
+    torch.testing.assert_close(actual.log_alpha, expected.log_alpha)
+    for optimizer_name in ("actor_optimizer", "q_optimizer", "alpha_optimizer"):
+        actual_state = getattr(actual, optimizer_name).state_dict()
+        expected_state = getattr(expected, optimizer_name).state_dict()
+        assert actual_state.keys() == expected_state.keys()
+        for parameter_key in actual_state["state"]:
+            actual_values = actual_state["state"][parameter_key]
+            expected_values = expected_state["state"][parameter_key]
+            assert actual_values.keys() == expected_values.keys()
+            for state_key in actual_values:
+                torch.testing.assert_close(
+                    actual_values[state_key],
+                    expected_values[state_key],
+                )
+
+
+def test_fast_sac_update_cycle_defers_metrics_until_one_read() -> None:
+    learner = _small_fast_sac_learner()
+    batch = _small_offpolicy_batch()
+    large_batch = {key: value.repeat(2, *[1] * (value.ndim - 1)) for key, value in batch.items()}
+
+    learner._run_update_cycle_core(
+        large_batch,
+        updates_per_step=2,
+        policy_frequency=1,
+        target_frequency=1,
+        policy_before_critic=False,
+    )
+    metrics = learner.read_deferred_cycle_metrics()
+
+    assert set(metrics) == {
+        "Loss/critic",
+        "Train/critic_gradient_norm",
+        "Train/target_q_max",
+        "Train/target_q_min",
+        "Loss/temperature",
+        "Policy/temperature",
+        "Loss/actor",
+        "Train/actor_gradient_norm",
+        "Loss/entropy",
+    }
+    assert all(math.isfinite(value) for value in metrics.values())
+    assert learner.read_deferred_cycle_metrics() == {}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA-only whole-cycle graph")
+def test_fast_sac_update_cycle_raw_graph_replays_with_stable_inputs_and_metrics(
+    monkeypatch,
+) -> None:
+    torch.manual_seed(123)
+    learner = FastSACLearner(
+        obs_dim=4,
+        action_dim=2,
+        critic_obs_dim=5,
+        device="cuda:0",
+        actor_hidden_dim=16,
+        critic_hidden_dim=16,
+        num_atoms=5,
+        num_q_networks=2,
+        use_layer_norm=False,
+        use_compile=True,
+    )
+    torch.manual_seed(123)
+    with monkeypatch.context() as hip_runtime:
+        hip_runtime.setattr(torch.version, "hip", "simulated-rocm", raising=False)
+        eager_learner = FastSACLearner(
+            obs_dim=4,
+            action_dim=2,
+            critic_obs_dim=5,
+            device="cuda:0",
+            actor_hidden_dim=16,
+            critic_hidden_dim=16,
+            num_atoms=5,
+            num_q_networks=2,
+            use_layer_norm=False,
+            use_compile=False,
+        )
+    batch = {
+        "obs": torch.randn(16, 4, device="cuda:0"),
+        "critic": torch.randn(16, 5, device="cuda:0"),
+        "actions": torch.rand(16, 2, device="cuda:0"),
+        "rewards": torch.randn(16, device="cuda:0"),
+        "next_obs": torch.randn(16, 4, device="cuda:0"),
+        "next_critic": torch.randn(16, 5, device="cuda:0"),
+        "dones": torch.zeros(16, device="cuda:0"),
+        "truncated": torch.zeros(16, device="cuda:0"),
+    }
+
+    torch.manual_seed(321)
+    learner.update_cycle(
+        batch,
+        updates_per_step=4,
+        policy_frequency=2,
+        target_frequency=1,
+        policy_before_critic=False,
+    )
+    first_metrics = learner.read_deferred_cycle_metrics()
+
+    torch.manual_seed(321)
+    eager_learner.update_actor(batch, read_metrics=False)
+    eager_learner.update_critic(batch, read_metrics=False)
+    eager_learner.soft_update_target()
+    for module_name in ("actor", "qnet", "qnet_target"):
+        torch.testing.assert_close(
+            getattr(learner, module_name).state_dict(),
+            getattr(eager_learner, module_name).state_dict(),
+            rtol=1e-3,
+            atol=1e-3,
+        )
+    torch.testing.assert_close(
+        learner.log_alpha,
+        eager_learner.log_alpha,
+        rtol=1e-3,
+        atol=1e-3,
+    )
+
+    assert learner._update_cycle_graph is not None
+    assert learner._update_cycle_static_batch is not None
+    static_addresses = {
+        key: value.data_ptr() for key, value in learner._update_cycle_static_batch.items()
+    }
+
+    changed_batch = {key: value * 0.5 for key, value in batch.items()}
+    learner.update_cycle(
+        changed_batch,
+        updates_per_step=4,
+        policy_frequency=2,
+        target_frequency=1,
+        policy_before_critic=False,
+    )
+    second_metrics = learner.read_deferred_cycle_metrics()
+    assert learner._update_cycle_static_batch is not None
+    assert static_addresses == {
+        key: value.data_ptr() for key, value in learner._update_cycle_static_batch.items()
+    }
+    assert set(first_metrics) == set(second_metrics)
+    assert first_metrics
+    assert all(math.isfinite(value) for value in second_metrics.values())
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA-only whole-cycle graph")
+def test_fast_sac_update_cycle_rekeys_on_shape_and_invalidates_checkpoint() -> None:
+    torch.manual_seed(123)
+    learner = FastSACLearner(
+        obs_dim=4,
+        action_dim=2,
+        critic_obs_dim=5,
+        device="cuda:0",
+        actor_hidden_dim=8,
+        critic_hidden_dim=8,
+        num_atoms=3,
+        num_q_networks=2,
+        use_layer_norm=False,
+        use_compile=True,
+    )
+    batch = {
+        "obs": torch.randn(16, 4, device="cuda:0"),
+        "critic": torch.randn(16, 5, device="cuda:0"),
+        "actions": torch.rand(16, 2, device="cuda:0"),
+        "rewards": torch.randn(16, device="cuda:0"),
+        "next_obs": torch.randn(16, 4, device="cuda:0"),
+        "next_critic": torch.randn(16, 5, device="cuda:0"),
+        "dones": torch.zeros(16, device="cuda:0"),
+        "truncated": torch.zeros(16, device="cuda:0"),
+    }
+    learner.update_cycle(
+        batch,
+        updates_per_step=1,
+        policy_frequency=2,
+        target_frequency=1,
+        policy_before_critic=False,
+    )
+    assert learner._update_cycle_graph is not None
+    first_graph = learner._update_cycle_graph
+    learner.read_deferred_cycle_metrics()
+
+    larger_batch = {key: torch.cat((value, value)) for key, value in batch.items()}
+    learner.update_cycle(
+        larger_batch,
+        updates_per_step=1,
+        policy_frequency=2,
+        target_frequency=1,
+        policy_before_critic=False,
+    )
+    assert learner._update_cycle_graph is not None
+    assert learner._update_cycle_graph is not first_graph
+    assert all(
+        tensor.shape == larger_batch[key].shape
+        for key, tensor in learner._update_cycle_static_batch.items()
+    )
+    assert all(math.isfinite(value) for value in learner.read_deferred_cycle_metrics().values())
+
+    learner.load_state_dict(learner.get_state_dict())
+    assert learner._update_cycle_graph is None
+    assert learner._update_cycle_graph_cache_key is None
+    assert learner._update_cycle_static_batch is None
+
+
+@pytest.mark.parametrize(
+    ("optimizer_name", "loss_value", "grad_value"),
+    [
+        ("q_optimizer", float("nan"), 1.0),
+        ("q_optimizer", 1.0, float("nan")),
+        ("actor_optimizer", float("nan"), 1.0),
+        ("actor_optimizer", 1.0, float("nan")),
+        ("alpha_optimizer", float("nan"), 1.0),
+        ("alpha_optimizer", 1.0, float("nan")),
+    ],
+)
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA-only fused optimizer gate")
-def test_fast_sac_device_finite_gate_skips_nonfinite_optimizer_step(
+def test_fast_sac_armed_finite_gate_skips_nonfinite_optimizer_step(
+    optimizer_name: str,
     loss_value: float,
     grad_value: float,
 ) -> None:
@@ -372,19 +764,20 @@ def test_fast_sac_device_finite_gate_skips_nonfinite_optimizer_step(
         num_atoms=3,
         num_q_networks=2,
         use_layer_norm=False,
+        use_autotune=False,
         use_compile=True,
     )
-    parameter = next(learner.qnet.parameters())
+    optimizer = getattr(learner, optimizer_name)
+    parameter = next(iter(optimizer.param_groups[0]["params"]))
     parameter.grad = torch.full_like(parameter, grad_value)
-    if not math.isfinite(grad_value):
-        learner._gradient_sync = lambda _parameters: None
+    learner._gradient_sync = (lambda _parameters: None) if not math.isfinite(grad_value) else None
     before = parameter.detach().clone()
 
-    with learner._optimizer_finite_gate(
-        learner.q_optimizer,
+    learner._arm_optimizer_finite_gate(
+        optimizer,
         torch.full((), loss_value, device="cuda:0"),
-    ):
-        learner.q_optimizer.step()
+    )
+    optimizer.step()
     torch.cuda.synchronize()
 
     torch.testing.assert_close(parameter, before)

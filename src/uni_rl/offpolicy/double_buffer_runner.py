@@ -247,7 +247,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
     def _cuda_graph_runtime_manifest(self) -> dict[str, object]:
         """Describe the effective learner graph backend."""
         compile_enabled = bool(getattr(self.learner, "use_compile", False))
-        return {
+        manifest: dict[str, object] = {
             "backend": "inductor" if compile_enabled else "eager",
             "critic": compile_enabled,
             "actor": compile_enabled,
@@ -255,6 +255,13 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                 getattr(self.learner, "_host_finite_checks", True)
             ),
         }
+        if bool(getattr(self.learner, "use_update_cycle", False)):
+            manifest["scope"] = "update_cycle"
+            manifest["orchestration"] = "cuda_graph"
+        elif compile_enabled:
+            manifest["scope"] = "loss_tensors"
+            manifest["orchestration"] = "inductor_cuda_graph_trees"
+        return manifest
 
     def _dp_initial_sync_tensors(self) -> dict[str, torch.Tensor]:
         """Live model-state references broadcast once before collection."""
@@ -1226,88 +1233,128 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
                     train_start = time.perf_counter()
                     train_phase_start_ns = time.perf_counter_ns()
 
-                    def run_actor_update(batch: dict[str, torch.Tensor], update_idx: int) -> None:
-                        next_actor_update = update_idx + self.policy_frequency
-                        defer_actor_metrics = bool(
-                            getattr(learner, "supports_deferred_update_metrics", False)
-                        )
-                        read_deferred_actor_metrics = (
-                            next_actor_update >= self.updates_per_step and not defer_actor_metrics
-                        )
-                        _actor_ns = time.perf_counter_ns()
-                        if getattr(learner, "supports_deferred_update_metrics", False):
-                            actor_metrics = learner.update_actor(
-                                batch,
-                                read_metrics=read_deferred_actor_metrics,
-                            )
-                        else:
-                            actor_metrics = learner.update_actor(batch)
-                        if trace_recorder:
-                            trace_recorder.add_slice(
-                                "learner/update_actor",
-                                category="learner",
-                                start_ns=_actor_ns,
-                                end_ns=time.perf_counter_ns(),
-                                args={"update_idx": update_idx},
-                            )
-                        for k, v in actor_metrics.items():
-                            iter_metrics[k].append(v)
-
-                    for update_idx in range(self.updates_per_step):
-                        s = update_idx * self.batch_size
-                        e = s + self.batch_size
-                        batch = {k: v[s:e] for k, v in large_batch.items()}
-                        read_deferred_critic_metrics = update_idx == self.updates_per_step - 1
-                        do_actor_update = update_idx % self.policy_frequency == 0
-
-                        if self.policy_before_critic and do_actor_update:
-                            run_actor_update(batch, update_idx)
-
-                        _critic_ns = time.perf_counter_ns()
-                        if getattr(learner, "supports_deferred_update_metrics", False):
-                            critic_metrics = learner.update_critic(
-                                batch,
-                                read_metrics=read_deferred_critic_metrics,
-                            )
-                        else:
-                            critic_metrics = learner.update_critic(batch)
-                        if trace_recorder:
-                            trace_recorder.add_slice(
-                                "learner/update_critic",
-                                category="learner",
-                                start_ns=_critic_ns,
-                                end_ns=time.perf_counter_ns(),
-                                args={"update_idx": update_idx},
-                            )
-                        for k, v in critic_metrics.items():
-                            iter_metrics[k].append(v)
-
-                        if not self.policy_before_critic and do_actor_update:
-                            run_actor_update(batch, update_idx)
-
-                        _target_ns = time.perf_counter_ns()
-                        if update_idx % self.target_frequency == 0:
-                            learner.soft_update_target()
-                        replay_pipeline.progress()
-                        if trace_recorder:
-                            trace_recorder.add_slice(
-                                "learner/soft_update_target",
-                                category="learner",
-                                start_ns=_target_ns,
-                                end_ns=time.perf_counter_ns(),
-                                args={
-                                    "update_idx": update_idx,
-                                },
-                            )
-
-                    deferred_actor_metrics = getattr(
-                        learner,
-                        "read_deferred_actor_metrics",
-                        None,
+                    update_cycle = cast(
+                        Callable[..., object] | None,
+                        getattr(learner, "update_cycle", None),
                     )
-                    if callable(deferred_actor_metrics):
-                        for key, value in cast(dict[str, float], deferred_actor_metrics()).items():
-                            iter_metrics[key].append(value)
+                    if update_cycle is not None and bool(
+                        getattr(learner, "use_update_cycle", False)
+                    ):
+                        update_cycle(
+                            large_batch,
+                            updates_per_step=self.updates_per_step,
+                            policy_frequency=self.policy_frequency,
+                            target_frequency=self.target_frequency,
+                            policy_before_critic=self.policy_before_critic,
+                            read_metrics=False,
+                        )
+                        # Replay ingress used to be polled after each update.  It is
+                        # kept at the same count after the submitted whole-cycle
+                        # graph so polling remains outside the compiled region.
+                        for _ in range(self.updates_per_step):
+                            replay_pipeline.progress()
+                        deferred_cycle_metrics = getattr(
+                            learner,
+                            "read_deferred_cycle_metrics",
+                            None,
+                        )
+                        if callable(deferred_cycle_metrics):
+                            for key, value in cast(
+                                dict[str, float],
+                                deferred_cycle_metrics(),
+                            ).items():
+                                iter_metrics[key].append(value)
+                    else:
+
+                        def run_actor_update(
+                            batch: dict[str, torch.Tensor],
+                            update_idx: int,
+                        ) -> None:
+                            next_actor_update = update_idx + self.policy_frequency
+                            defer_actor_metrics = bool(
+                                getattr(learner, "supports_deferred_update_metrics", False)
+                            )
+                            read_deferred_actor_metrics = (
+                                next_actor_update >= self.updates_per_step
+                                and not defer_actor_metrics
+                            )
+                            _actor_ns = time.perf_counter_ns()
+                            if getattr(learner, "supports_deferred_update_metrics", False):
+                                actor_metrics = learner.update_actor(
+                                    batch,
+                                    read_metrics=read_deferred_actor_metrics,
+                                )
+                            else:
+                                actor_metrics = learner.update_actor(batch)
+                            if trace_recorder:
+                                trace_recorder.add_slice(
+                                    "learner/update_actor",
+                                    category="learner",
+                                    start_ns=_actor_ns,
+                                    end_ns=time.perf_counter_ns(),
+                                    args={"update_idx": update_idx},
+                                )
+                            for k, v in actor_metrics.items():
+                                iter_metrics[k].append(v)
+
+                        for update_idx in range(self.updates_per_step):
+                            s = update_idx * self.batch_size
+                            e = s + self.batch_size
+                            batch = {k: v[s:e] for k, v in large_batch.items()}
+                            read_deferred_critic_metrics = update_idx == self.updates_per_step - 1
+                            do_actor_update = update_idx % self.policy_frequency == 0
+
+                            if self.policy_before_critic and do_actor_update:
+                                run_actor_update(batch, update_idx)
+
+                            _critic_ns = time.perf_counter_ns()
+                            if getattr(learner, "supports_deferred_update_metrics", False):
+                                critic_metrics = learner.update_critic(
+                                    batch,
+                                    read_metrics=read_deferred_critic_metrics,
+                                )
+                            else:
+                                critic_metrics = learner.update_critic(batch)
+                            if trace_recorder:
+                                trace_recorder.add_slice(
+                                    "learner/update_critic",
+                                    category="learner",
+                                    start_ns=_critic_ns,
+                                    end_ns=time.perf_counter_ns(),
+                                    args={"update_idx": update_idx},
+                                )
+                            for k, v in critic_metrics.items():
+                                iter_metrics[k].append(v)
+
+                            if not self.policy_before_critic and do_actor_update:
+                                run_actor_update(batch, update_idx)
+
+                            _target_ns = time.perf_counter_ns()
+                            if update_idx % self.target_frequency == 0:
+                                learner.soft_update_target()
+                            replay_pipeline.progress()
+                            if trace_recorder:
+                                trace_recorder.add_slice(
+                                    "learner/soft_update_target",
+                                    category="learner",
+                                    start_ns=_target_ns,
+                                    end_ns=time.perf_counter_ns(),
+                                    args={
+                                        "update_idx": update_idx,
+                                    },
+                                )
+
+                        deferred_actor_metrics = getattr(
+                            learner,
+                            "read_deferred_actor_metrics",
+                            None,
+                        )
+                        if callable(deferred_actor_metrics):
+                            for key, value in cast(
+                                dict[str, float],
+                                deferred_actor_metrics(),
+                            ).items():
+                                iter_metrics[key].append(value)
 
                     replay_pipeline.after_tick()
                     device = torch.device(self.device)

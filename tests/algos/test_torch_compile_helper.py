@@ -9,6 +9,14 @@ import torch
 from uni_rl.algos.common import compile as compile_helper
 
 
+def test_hip_runtime_detection_preserves_rocm_compatibility(monkeypatch) -> None:
+    monkeypatch.setattr(torch.version, "hip", "6.3", raising=False)
+    assert compile_helper.is_hip_runtime() is True
+
+    monkeypatch.setattr(torch.version, "hip", None, raising=False)
+    assert compile_helper.is_hip_runtime() is False
+
+
 def _without_triton(name: str, *args: Any, **kwargs: Any) -> Any:
     if name == "triton":
         return None

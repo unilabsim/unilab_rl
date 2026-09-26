@@ -622,6 +622,116 @@ def test_runner_releases_action_before_replay_wait_and_sample(
     assert deferred_metrics["Loss/actor"] == pytest.approx(3.0)
 
 
+def test_runner_uses_learner_update_cycle_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    events: list[str] = []
+    large_batches: list[dict[str, torch.Tensor]] = []
+
+    class CycleReplayBuffer(_FakeReplayBuffer):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.ptr[0] = 4
+            self.size[0] = 4
+            self.published_ptr = 4
+
+    class CyclePipeline(_FakePipeline):
+        last_incremental_h2d_time_s = 0.0
+
+        def progress(self, *, wait=False):
+            events.append("replay_progress")
+            return wait
+
+        def start_prepare(self, tick_id, sample_count, min_snapshot_ptr=None):
+            del tick_id, sample_count, min_snapshot_ptr
+            events.append("replay_prepare")
+            return True
+
+        def batch_ready(self, tick_id, sample_count):
+            del tick_id, sample_count
+            events.append("replay_batch_ready")
+            return True
+
+        def sample_large_batch(self, tick_id, sample_count):
+            del tick_id
+            events.append("replay_sample")
+            batch = {"obs": torch.empty(sample_count, 4)}
+            large_batches.append(batch)
+            return batch
+
+        def after_tick(self):
+            events.append("replay_after_tick")
+
+    class CycleLearner(_Learner):
+        supports_deferred_update_metrics = True
+        use_update_cycle = True
+        calls: list[dict[str, object]] = []
+
+        def update_critic(self, batch):
+            del batch
+            events.append("update_critic")
+            return {}
+
+        def update_actor(self, batch):
+            del batch
+            events.append("update_actor")
+            return {}
+
+        def soft_update_target(self):
+            events.append("soft_update_target")
+
+        def update_cycle(self, large_batch, **kwargs):
+            self.calls.append({"batch": large_batch, **kwargs})
+            events.append("update_cycle")
+
+        def read_deferred_cycle_metrics(self):
+            events.append("cycle_metrics")
+            return {}
+
+    monkeypatch.setattr(device_runner_module, "ReplayBuffer", CycleReplayBuffer)
+    monkeypatch.setattr(device_runner_module, "GPUResidentReplayPipeline", CyclePipeline)
+    monkeypatch.setattr(device_runner_module, "OffPolicyLogger", _FakeLogger)
+    monkeypatch.setattr(device_runner_module.torch, "save", lambda *args, **kwargs: None)
+    monkeypatch.setattr(device_runner_module.time, "sleep", lambda seconds: None)
+
+    learner = CycleLearner()
+    runner = _make_device_runner(monkeypatch, learner)
+    runner.device = "cpu"
+    monkeypatch.setattr(runner, "_start_collector", lambda **kwargs: None)
+    monkeypatch.setattr(runner, "_check_collector_alive", lambda: True)
+    monkeypatch.setattr(runner, "_wait_for_inference_request", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(
+        runner,
+        "_serve_learner_inference",
+        lambda *args, **kwargs: {
+            "inference_h2d_time": 0.0,
+            "inference_forward_time": 0.0,
+            "inference_d2h_time": 0.0,
+            "inference_time": 0.0,
+        },
+    )
+    monkeypatch.setattr(runner, "_publish_inference_response", lambda *args, **kwargs: None)
+
+    runner.learn(max_iterations=1, save_interval=0, log_dir=str(tmp_path))
+
+    assert learner.calls == [
+        {
+            "batch": large_batches[0],
+            "updates_per_step": 2,
+            "policy_frequency": 1,
+            "target_frequency": 1,
+            "policy_before_critic": False,
+            "read_metrics": False,
+        }
+    ]
+    assert "update_critic" not in events
+    assert "update_actor" not in events
+    cycle_idx = events.index("update_cycle")
+    assert events[cycle_idx + 1 :].count("replay_progress") == 2
+    assert events[-3:] == ["replay_progress", "cycle_metrics", "replay_after_tick"]
+
+
 def test_runtime_manifest_reports_inductor_cuda_graph_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -636,12 +746,24 @@ def test_runtime_manifest_reports_inductor_cuda_graph_path(
         "critic": True,
         "actor": True,
         "device_finite_optimizer_gating": True,
+        "scope": "loss_tensors",
+        "orchestration": "inductor_cuda_graph_trees",
     }
 
+    learner.use_update_cycle = True
+    assert runner._cuda_graph_runtime_manifest() == {
+        "backend": "inductor",
+        "critic": True,
+        "actor": True,
+        "device_finite_optimizer_gating": True,
+        "scope": "update_cycle",
+        "orchestration": "cuda_graph",
+    }
+
+    learner.use_update_cycle = False
     learner.use_compile = False
     learner._host_finite_checks = True
-    fallback_manifest = runner._cuda_graph_runtime_manifest()
-    assert fallback_manifest == {
+    assert runner._cuda_graph_runtime_manifest() == {
         "backend": "eager",
         "critic": False,
         "actor": False,
