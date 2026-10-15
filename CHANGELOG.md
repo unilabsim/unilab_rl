@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.15] - 2026-10-16
+
 ### Added
 
 - `env_contract.SupportsCompletionReceiptsProtocol` and
@@ -69,6 +71,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails closed with a `TypeError` on NumPy input. The dead single-slot
   `SharedInferenceSlot` exchange and its tests are deleted.
 
+- Removed the collector graph protocol, configuration, runner state, public
+  lifecycle manifest, and whole-collector completion operation with no
+  compatibility path (Motphys/UniLab#2358 and Motphys/UniLab#2359). Replay
+  ingress now uses the neutral v2 completion contract:
+  `CompletionTokenProtocol`, `wait_completion`, `import_shared_completion`,
+  top-level env `completion` receipts, `producer_id`, and
+  publication-sequence metadata. Backend physics graphs and FlashSAC learner
+  CUDA graphs are unchanged. Runtime manifests use schema version 2 so v1
+  collector-graph manifests fail closed.
+
 ### Fixed
 
 - The CPU-ring inference staging policy no longer labels non-CUDA accelerator
@@ -76,22 +88,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cpu_no_device_transfer`; they now report
   `cpu_ring_explicit_learner_device_copy` because the ring `copy_` boundary
   still crosses devices (UniLab #2365).
-
-## [2.0.0] - 2026-10-15
-
-### Removed
-
-- Removed the collector graph protocol, configuration, runner state, public
-  lifecycle manifest, and whole-collector completion operation with no
-  compatibility path (Motphys/UniLab#2358 and Motphys/UniLab#2359). Replay ingress now uses
-  the neutral v2 completion contract: `CompletionTokenProtocol`,
-  `wait_completion`, `import_shared_completion`, top-level env `completion`
-  receipts, `producer_id`, and publication-sequence metadata. Backend physics
-  graphs and FlashSAC learner CUDA graphs are unchanged. Runtime manifests use
-  schema version 2 so v1 collector-graph manifests fail closed.
-
-### Fixed
-
 - Replay ingress now validates and waits for the producer completion before
   its first transition-source read or copy, instead of enqueueing the wait
   after the ingress copies. Unexpected CUDA IPC handle export failures also
